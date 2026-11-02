@@ -6,6 +6,7 @@ import UploadFileIcon from '@mui/icons-material/UploadFile';
 import { Patrimony } from '@/components/charts/patrimony';
 import AllocationExplorer from '@/components/dashboard/allocationExplorer';
 import Insights from '@/components/dashboard/insights';
+import TargetsSummary from '@/components/dashboard/targetsSummary';
 import ClassificationModal from '@/components/modals/classification';
 import PositionsTable from '@/components/positionsTable';
 import { Button, Card, CardTitle, EmptyState, ErrorState, LoadingState, PageHeader, ProfitText } from '@/components/ui';
@@ -15,6 +16,7 @@ import {
 import { investidor10Url } from '@/lib/assets';
 import { formatSignedPercent } from '@/lib/format';
 import { useFormat } from '@/lib/privacy';
+import { Targets } from '@/lib/targets';
 import { useApi } from '@/lib/useApi';
 import { Position, PositionHistory, PositionResponse } from '@/types';
 
@@ -39,6 +41,8 @@ export default function Home() {
     '/position-history',
     onlyClassFiltered ? { class: classFilter.key } : undefined,
   );
+
+  const targets = useApi<Targets>('/targets');
 
   if (isLoading && !data) return <LoadingState label="Carregando carteira..." />;
   if (error && !data) return <ErrorState message={error} onRetry={reload} />;
@@ -139,6 +143,10 @@ export default function Home() {
             )}
           </Card>
         </div>
+
+        {targets.data && (filters.length === 0 || onlyClassFiltered) && (
+          <TargetsSummary assets={assets} targets={targets.data} assetClass={onlyClassFiltered ? classFilter.key : null} />
+        )}
 
         <Insights assets={selected} />
 
