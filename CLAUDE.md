@@ -110,6 +110,7 @@ Não há FK entre `wallet` e `app`: a ligação é por string, com `Order.name` 
 - A distribuição é calculada no cliente em `lib/allocation.ts`, a partir da lista de posições: cada clique numa fatia vira um filtro, e a hierarquia é classe → categoria → subcategoria → ativo. A tabela e os indicadores do dashboard usam a mesma seleção.
 - As cores das classes são fixas em `lib/assets.ts`. A paleta foi validada para o fundo escuro, e a ordem dela importa; não reordene nem gere cores novas: acima de 7 grupos, o restante vira "Outros".
 - `investidor10Url` em `lib/assets.ts` monta os links por classe. Renda fixa não tem página por título no Investidor10.
+- Valores da carteira são formatados com `useFormat` de `lib/privacy.tsx`, que respeita o botão de ocultar. Use `lib/format` direto só para o que não revela quanto o usuário tem. O percentual de uso do limite do FGC revela, porque o limite é público.
 - Highcharts só roda no navegador; importe `charts/stock` com `next/dynamic` e `ssr: false`.
 
 ### Autenticação

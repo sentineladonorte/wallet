@@ -28,11 +28,21 @@ Carteira pessoal de investimentos em dark mode: importar a posição da B3, ente
 - [x] Frontend: refazer dashboard, boletas, ativos, detalhe do ativo, login e perfil
 - [x] Verificar no navegador, em ambiente isolado, com capturas de tela
 
+## Feito depois (02/11/2026)
+
+- [x] Botão de ocultar valores (`lib/privacy.tsx`); novos valores da carteira devem usar `useFormat`
+- [x] Tooltip da pizza acima do valor central
+- [x] Emissores: recuperados das descrições (migração `0010`), e a importação completa os que faltam
+- [x] Tela de emissores com uso do limite do FGC (`/issuers`)
+- [x] Filtro por classe na tabela de posições
+
 ## Próximos passos
 
 Sem ordem obrigatória; os dois primeiros têm o maior retorno.
 
 - [ ] **Classificar ativos sem categoria:** FIIs e ações importados só têm categoria se ela já existir em `Asset` (ou for editada na tela). Avaliar preencher por `populate_asset` ou pelo Investidor10
+- [ ] **Agrupar emissores por conglomerado:** bancos do mesmo grupo dividem o limite do FGC, e a tela mostra cada emissor separado
+- [ ] Teto global do FGC (R$ 1 milhão por CPF a cada 4 anos) como indicador na tela de emissores
 - [ ] Metas de alocação por classe e sugestão de rebalanceamento
 - [ ] Proventos: registrar e mostrar dividendos e rendimentos
 - [ ] Importar o extrato de negociação da B3, que traz data e preço reais de compra
@@ -83,4 +93,4 @@ docker exec backend python manage.py reset_portfolio --username SEU_USUARIO --ye
 
 ## Estado do trabalho
 
-A importação da B3 e a grande atualização estão na branch `feat/b3-import-dashboard`, ainda sem merge em `main` e sem push. Os ajustes locais de `docker-compose.yml` (portas e versão do Postgres) ficaram fora dos commits de propósito. Commits não levam linha de coautoria.
+Tudo o que está marcado como feito neste arquivo já está em `main`. Os ajustes locais de `docker-compose.yml` (portas e versão do Postgres) ficam fora dos commits de propósito. Commits não levam linha de coautoria.
