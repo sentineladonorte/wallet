@@ -17,9 +17,10 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
 
-        tickers = options["tickers"]
-        user = User.objects.get()
+        for user in User.objects.filter(order__isnull=False).distinct():
+            self.consolidate_user(user, options["tickers"])
 
+    def consolidate_user(self, user, tickers):
         # Sem taxa (ex.: importação da B3) não há como projetar: vale o valor informado no arquivo.
         assets = Order.objects.filter(
             user=user, asset_type="RF", interest_rate__isnull=False
@@ -29,7 +30,9 @@ class Command(BaseCommand):
         ).delete()
 
         if tickers:
-            assets = Order.objects.filter(name__in=tickers, interest_rate__isnull=False)
+            assets = Order.objects.filter(
+                user=user, name__in=tickers, interest_rate__isnull=False
+            )
 
         for asset in assets:
             asset_name = asset.name
