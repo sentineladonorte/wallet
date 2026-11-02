@@ -5,12 +5,28 @@ import { ArcElement, Chart as ChartJS, Tooltip } from 'chart.js';
 import { Doughnut } from 'react-chartjs-2';
 import { AllocationGroup } from '@/lib/allocation';
 import { OTHER_COLOR } from '@/lib/assets';
-import { formatCurrency, formatPercent } from '@/lib/format';
+import { formatPercent } from '@/lib/format';
+import { useFormat } from '@/lib/privacy';
 
 ChartJS.register(ArcElement, Tooltip);
 
 const SURFACE = '#1a1a19';
 const OTHERS_KEY = '__others__';
+const TOOLTIP_LINE_LENGTH = 26;
+
+/** O tooltip não passa da largura do canvas, então nomes longos de emissores precisam quebrar linha. */
+const wrapLabel = (label: string) => {
+  const lines: string[] = [];
+  label.split(' ').forEach((word) => {
+    const last = lines[lines.length - 1];
+    if (last !== undefined && `${last} ${word}`.length <= TOOLTIP_LINE_LENGTH) {
+      lines[lines.length - 1] = `${last} ${word}`;
+    } else {
+      lines.push(word);
+    }
+  });
+  return lines;
+};
 
 const AllocationDonut: React.FC<{
   groups: AllocationGroup[];
@@ -18,6 +34,7 @@ const AllocationDonut: React.FC<{
   caption: string;
   onSelect: (group: AllocationGroup) => void;
 }> = ({ groups, total, caption, onSelect }) => {
+  const { formatCurrency } = useFormat();
   const visible = groups.filter((group) => !group.folded);
   const folded = groups.filter((group) => group.folded);
   const slices = folded.length
@@ -34,7 +51,13 @@ const AllocationDonut: React.FC<{
 
   return (
     <div className="relative w-full max-w-[280px] aspect-square mx-auto">
+      {/* O tooltip é desenhado no canvas: o texto central precisa ficar atrás dele. */}
+      <div className="absolute inset-0 z-0 flex flex-col items-center justify-center pointer-events-none px-12 text-center">
+        <span className="text-xs text-muted truncate max-w-full">{caption}</span>
+        <span className="text-lg font-semibold tabular-nums">{formatCurrency(total)}</span>
+      </div>
       <Doughnut
+        style={{ position: 'relative', zIndex: 1 }}
         aria-label={`Distribuição: ${slices.map((slice) => `${slice.label} ${formatPercent(slice.share)}`).join(', ')}`}
         data={{
           labels: slices.map((slice) => slice.label),
@@ -63,7 +86,14 @@ const AllocationDonut: React.FC<{
           plugins: {
             legend: { display: false },
             tooltip: {
+              backgroundColor: '#242422',
+              borderColor: '#383835',
+              borderWidth: 1,
+              titleColor: '#f0efec',
+              bodyColor: '#f0efec',
+              padding: 10,
               callbacks: {
+                title: (items) => wrapLabel(slices[items[0].dataIndex].label),
                 label: (context) => {
                   const slice = slices[context.dataIndex];
                   return ` ${formatCurrency(slice.value)} (${formatPercent(slice.share)})`;
@@ -73,10 +103,6 @@ const AllocationDonut: React.FC<{
           },
         }}
       />
-      <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none px-12 text-center">
-        <span className="text-xs text-muted truncate max-w-full">{caption}</span>
-        <span className="text-lg font-semibold tabular-nums">{formatCurrency(total)}</span>
-      </div>
     </div>
   );
 };
