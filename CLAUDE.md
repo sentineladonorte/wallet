@@ -113,6 +113,10 @@ Não há FK entre `wallet` e `app`: a ligação é por string, com `Order.name` 
 - Valores da carteira são formatados com `useFormat` de `lib/privacy.tsx`, que respeita o botão de ocultar. Use `lib/format` direto só para o que não revela quanto o usuário tem. O percentual de uso do limite do FGC revela, porque o limite é público.
 - Highcharts só roda no navegador; importe `charts/stock` com `next/dynamic` e `ssr: false`.
 
+### Metas de alocação
+
+`AllocationTarget` guarda dois níveis: a classe na carteira (`category` vazia) e a categoria dentro da classe, com percentual sobre o total da classe. `PUT /api/targets` substitui um nível inteiro de uma vez e recusa soma acima de 100%; abaixo disso é permitido. A comparação com a posição é feita no cliente, em `lib/targets.ts`. A categoria é comparada pelo texto exato de `Asset.category`, ou do indexador na renda fixa.
+
 ### Autenticação
 
 - A autenticação real é a sessão do Django. O `api.ts` usa `withCredentials: true`.

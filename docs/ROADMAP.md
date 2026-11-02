@@ -35,6 +35,7 @@ Carteira pessoal de investimentos em dark mode: importar a posição da B3, ente
 - [x] Emissores: recuperados das descrições (migração `0010`), e a importação completa os que faltam
 - [x] Tela de emissores com uso do limite do FGC (`/issuers`)
 - [x] Filtro por classe na tabela de posições
+- [x] Metas de alocação por classe e por categoria dentro da classe (`/targets`), com quanto falta em reais e resumo no dashboard
 
 ## Próximos passos
 
@@ -43,7 +44,8 @@ Sem ordem obrigatória; os dois primeiros têm o maior retorno.
 - [ ] **Classificar ativos sem categoria:** FIIs e ações importados só têm categoria se ela já existir em `Asset` (ou for editada na tela). Avaliar preencher por `populate_asset` ou pelo Investidor10
 - [ ] **Agrupar emissores por conglomerado:** bancos do mesmo grupo dividem o limite do FGC, e a tela mostra cada emissor separado
 - [ ] Teto global do FGC (R$ 1 milhão por CPF a cada 4 anos) como indicador na tela de emissores
-- [ ] Metas de alocação por classe e sugestão de rebalanceamento
+- [ ] Calculadora de aporte: dado um valor, sugerir quanto colocar em cada classe e categoria para se aproximar das metas
+- [ ] Metas por subcategoria (hoje são dois níveis: classe e categoria)
 - [ ] Proventos: registrar e mostrar dividendos e rendimentos
 - [ ] Importar o extrato de negociação da B3, que traz data e preço reais de compra
 - [ ] Atualização automática de cotações, substituindo o intervalo fixo em `populate_asset_price`
@@ -93,4 +95,4 @@ docker exec backend python manage.py reset_portfolio --username SEU_USUARIO --ye
 
 ## Estado do trabalho
 
-Tudo o que está marcado como feito neste arquivo já está em `main`. Os ajustes locais de `docker-compose.yml` (portas e versão do Postgres) ficam fora dos commits de propósito. Commits não levam linha de coautoria.
+O que está marcado como feito pode ainda não ter commit; confira com `git status`. Os ajustes locais de `docker-compose.yml` (portas e versão do Postgres) ficam fora dos commits de propósito. Commits não levam linha de coautoria.
