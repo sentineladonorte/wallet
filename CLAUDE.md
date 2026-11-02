@@ -40,7 +40,7 @@ python manage.py test wallet.tests.MinhaClasse.test_metodo   # um único teste
 flake8                                         # na raiz do repo; .flake8 define max-line-length = 120
 ```
 
-Só `wallet/tests.py` tem testes; os de `app` e `user` ainda são stubs. O `flake8` não está em `requirements.txt`. A imagem Docker usa Python 3.9.
+`wallet` e `app` têm testes, sem acesso à rede; os de `user` ainda são stub. O `flake8` não está em `requirements.txt`. A imagem Docker usa Python 3.9.
 
 ### Frontend (dentro de `frontend/`)
 
@@ -57,11 +57,12 @@ Não há framework de testes configurado no frontend.
 | Comando | Função |
 | --- | --- |
 | `populate_asset` | Cadastra `Asset` a partir das APIs públicas da B3 |
-| `populate_asset_price` | Importa cotações da B3 para `AssetPrice`; o intervalo de datas está fixo no código (`data_inicio`/`data_fim`), edite antes de rodar |
+| `update_market_data [--year AAAA ...]` | Baixa cotações da B3, preenche categorias e gera o histórico |
+| `market_scheduler` | Repete a atualização em intervalos; é o comando do serviço `market-updater` |
 | `alphavantage TICKER...` | Importa cotações pela Alpha Vantage |
-| `consolidate [--tickers ...]` | Recalcula o histórico de AC/FII desde a primeira compra |
+| `consolidate [--tickers ...]` | Recalcula do zero o histórico de renda variável de todos os usuários |
 | `consolidate_fixed_income [--tickers ...]` | Recalcula o histórico de renda fixa |
-| `daily_consolidation` | Recalcula os últimos 10 dias |
+| `daily_consolidation` | Gera o histórico das datas novas de todos os usuários |
 | `reset_portfolio --username X [--yes]` | Apaga boletas e histórico do usuário; sem `--yes`, só mostra o que seria apagado |
 | `backup` / `restore ARQUIVO` | `pg_dump`/`pg_restore` em `backend/backups/` |
 
@@ -91,6 +92,17 @@ Não há FK entre `wallet` e `app`: a ligação é por string, com `Order.name` 
 - Em `position`, o preço de `RF` vem de `AssetConsolidatedValue`; o dos demais tipos vem de `AssetPrice`. Sem essas linhas, o ativo aparece sem preço e fica fora dos totais.
 - Ao criar uma ordem `RF`, a API grava `name` como `"<nome> <vencimento>"`. O frontend envia esse nome codificado na URL.
 
+### Movimentação da B3: boletas derivadas
+
+O extrato de movimentação (`wallet/movements.py`) e o relatório de posição entram pelo mesmo modal e pelas mesmas rotas; o tipo é detectado pela aba do arquivo. Linhas ficam em `Movement`, e cada relatório vira uma foto em `PositionSnapshot`.
+
+- **Boletas com `source` `movement` são derivadas:** `rebuild_orders` as recria do zero a cada importação, a partir de `Movement` e da foto mais recente, e a API recusa editá-las. Boletas `manual` nunca são tocadas, exceto se o usuário escolher na prévia.
+- **Duplicação:** `Movement.fingerprint` usa data, tipo, ativo, corretora, quantidade, preço e valor, sem o nome do produto, que muda com o tempo, e `occurrence` numera operações idênticas legítimas. Dentro de um arquivo, a mesma linha com textos de produto diferentes é duplicata da própria B3 e conta uma vez.
+- **Semântica validada contra a posição real:** `Atualização` igual ao saldo não faz nada e, diferente, soma; `Grupamento` informa o saldo final; `Resgate` a crédito é dinheiro de ativo extinto, não venda; saída com valor zero não é prejuízo. Altere essas regras comparando de novo com um relatório de posição.
+- **`Order.kind`** define o efeito em `RunningPosition`: `event` e `transfer` mudam só a quantidade; `trade` entra no custo e no lucro realizado; `reconcile` e `succession` mexem no custo sem gerar lucro.
+- **A foto de posição manda na quantidade:** o que o extrato não explica é acertado na data dela. Faltando quantidade, entra custo estimado; sobrando em ativo fora da posição, ele é encerrado na última atividade conhecida.
+- `rebuild_history` refaz todo o histórico em segundo plano depois de importar, com fila por usuário. Antes da foto, a renda fixa é uma estimativa: cresce a taxa constante do custo até o valor oficial.
+
 ### Importação da posição da B3
 
 `wallet/b3_import.py` lê o .xlsx exportado pela B3 e é exposto em `POST /api/orders/import/preview` e `/confirm`, ambos pelo mesmo `build_plan`.
@@ -101,6 +113,7 @@ Não há FK entre `wallet` e `app`: a ligação é por string, com `Order.name` 
 - Posição ausente do arquivo nunca é zerada automaticamente; o usuário escolhe na prévia.
 - Um ativo com boletas existentes mantém a classe delas, mesmo que o arquivo classifique diferente.
 - A importação grava também em `Asset` e `AssetPrice`, que são **globais** e afetam todos os usuários.
+- Sem movimentações, o relatório cria boletas `position` com custo estimado; com elas, só guarda a foto e recalcula.
 
 ### Frontend
 
@@ -119,6 +132,14 @@ Não há FK entre `wallet` e `app`: a ligação é por string, com `Order.name` 
 
 A calculadora de aporte (`lib/contribution.ts`) usa as metas salvas, calcula a meta sobre o total depois do aporte e divide o valor na proporção do que falta a cada grupo, primeiro entre classes e depois dentro de cada classe. Ela trabalha em centavos para a soma fechar exatamente no aporte.
 
+### Cotações, categorias e histórico
+
+`wallet/market_update.py` coordena três etapas, chamadas pelo serviço `market-updater`, pelo comando `update_market_data` e por `POST /api/market-data`. Um lock do Postgres impede duas execuções ao mesmo tempo, e cada uma fica registrada em `MarketDataUpdate`.
+
+- `app/market_data.py` baixa o COTAHIST da B3. O arquivo só existe depois do pregão, e o 404 é tratado como feriado ou arquivo ainda não publicado. Os preços não têm ajuste de desdobramento.
+- `app/categories.py` só preenche o que está vazio. Reaproveita nomes já usados, porque as metas comparam o texto exato: ação e BDR copiam outro papel da mesma empresa; se não houver, ação usa o setor da B3 e BDR a indústria do Investidor10; FII usa o segmento do Investidor10; ETF não tem fonte externa e vem do "Tipo" do relatório da B3.
+- `wallet/consolidation.py` gera `AssetConsolidatedValue` só para datas posteriores à última linha do usuário, limitado a 30 dias, e nunca sobrescreve o valor gravado por uma importação. Renda fixa sem taxa mantém o último valor.
+
 ### Autenticação
 
 - A autenticação real é a sessão do Django. O `api.ts` usa `withCredentials: true`.
@@ -128,9 +149,7 @@ A calculadora de aporte (`lib/contribution.ts`) usa as metas salvas, calcula a m
 
 ## Armadilhas
 
-- Os comandos de consolidação usam `User.objects.get()` e falham com `MultipleObjectsReturned` quando há mais de um usuário, o que é possível desde que `/api/register` existe.
-- O relatório da B3 tem dados reais de conta e posição. `posicao-*.xlsx` está no `.gitignore`, e os testes geram planilhas sintéticas.
-- `daily_consolidation` não filtra `RF` nem define `asset_type`; ordens `RF` fazem `AssetPrice...latest()` lançar `DoesNotExist`.
+- Os relatórios da B3 têm dados reais de conta e posição. `posicao-*.xlsx` e `movimentacao-*.xlsx` estão no `.gitignore`, e os testes geram planilhas sintéticas.
 - `backend/dev.py` e `backend/wallet/dev.py` são scripts avulsos de shell que **alteram dados de forma irreversível** (ajuste de desdobramento do BCFF11). Não os execute nem os importe.
 - O banco de desenvolvimento não é descartável, e `manage.py test` não funciona nele. Rode os testes como descrito em `docs/ROADMAP.md`.
 - `frontend/package.json` usa `latest` em `next`, `react` e outros, então um build novo pode trazer versões maiores.
