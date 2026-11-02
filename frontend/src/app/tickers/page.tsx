@@ -1,23 +1,23 @@
 'use client'
 
-import React, { useEffect, useState } from 'react';
-import AssetTable from '../../components/assetTable';
-import api from '../../services/api';
+import React from 'react';
+import AssetTable from '@/components/assetTable';
+import { Card, ErrorState, LoadingState, PageHeader } from '@/components/ui';
+import { useApi } from '@/lib/useApi';
+import { AssetInfo } from '@/types';
 
 const AssetsPage: React.FC = () => {
-  const [assets, setAssets] = useState<any>([]);
-
-  useEffect(() => {
-    api.get('/assets').then(response => {
-      setAssets(response.data)
-    })
-  }, [])
+  const { data, isLoading, error, reload } = useApi<AssetInfo[]>('/assets');
 
   return (
-    <div className="container mx-auto p-4">
-      <h1 className="text-2xl font-bold mb-4">Tabela de Ativos</h1>
-      <AssetTable assets={assets} />
-    </div>
+    <>
+      <PageHeader title="Ativos" subtitle="Todos os ativos cadastrados, não só os da sua carteira." />
+      <Card>
+        {isLoading && !data && <LoadingState />}
+        {error && !data && <ErrorState message={error} onRetry={reload} />}
+        {data && <AssetTable assets={data} />}
+      </Card>
+    </>
   );
 };
 

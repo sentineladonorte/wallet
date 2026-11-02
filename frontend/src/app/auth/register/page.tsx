@@ -1,69 +1,46 @@
 'use client'
 
-import { FormEvent } from 'react'
+import { FormEvent, useState } from 'react'
+import AuthForm from '@/components/authForm';
+import { Field, inputClass } from '@/components/ui';
+import { errorMessage } from '@/lib/useApi';
 import api from '@/services/api';
 
-
 const Register: React.FC = () => {
-  const handleCadastro = async (event: FormEvent<HTMLFormElement>) => {
+  const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleRegister = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    setIsSubmitting(true);
+    setError(null);
 
     try {
-      const formData = new FormData(event.currentTarget)
-      const username = formData.get('username')?.toString() ?? '';
-      const email = formData.get('email')?.toString() ?? '';
-      const password = formData.get('password')?.toString() ?? '';
-
-      await api.post('/register', { username, password, email });
-
+      await api.post('/register', {
+        username: formData.get('username')?.toString() ?? '',
+        email: formData.get('email')?.toString() ?? '',
+        password: formData.get('password')?.toString() ?? '',
+      });
       window.location.href = '/';
-
-    } catch (error) {
-
+    } catch (requestError) {
+      setError(errorMessage(requestError, 'Não foi possível criar a conta.'));
+      setIsSubmitting(false);
     }
-
-
   };
 
   return (
-    <div className="flex justify-center items-center h-screen bg-gray-800">
-      <form onSubmit={handleCadastro} className="p-10 bg-gray-700 rounded-lg shadow-md max-w-lg w-full">
-        <div className="mb-6">
-          <label htmlFor="username" className="block mb-2 text-sm font-medium text-gray-300">Usuário:</label>
-          <input
-            type="text"
-            id="username"
-            name='username'
-            required
-            className="w-full p-3 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-gray-800 text-white"
-          />
-        </div>
-        <div className="mb-6">
-          <label htmlFor="email" className="block mb-2 text-sm font-medium text-gray-300">Email:</label>
-          <input
-            type="email"
-            id="email"
-            name="email"
-            required
-            className="w-full p-3 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-gray-800 text-white"
-          />
-        </div>
-        <div className="mb-6">
-          <label htmlFor="password" className="block mb-2 text-sm font-medium text-gray-300">Senha:</label>
-          <input
-            type="password"
-            id="password"
-            name='password'
-            required
-            className="w-full p-3 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-gray-800 text-white"
-          />
-        </div>
-        <button type="submit" className="w-full p-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">Cadastrar</button>
-        <div className="mt-4">
-          <a href="/auth" className="text-blue-300 hover:text-blue-500">Login</a>
-        </div>
-      </form>
-    </div>
+    <AuthForm title="Crie sua conta" submitLabel="Cadastrar" error={error} isSubmitting={isSubmitting} footerHref="/auth" footerLabel="Já tenho conta" onSubmit={handleRegister}>
+      <Field label="Usuário" htmlFor="username">
+        <input type="text" id="username" name="username" autoComplete="username" required className={inputClass} />
+      </Field>
+      <Field label="E-mail" htmlFor="email">
+        <input type="email" id="email" name="email" autoComplete="email" required className={inputClass} />
+      </Field>
+      <Field label="Senha" htmlFor="password">
+        <input type="password" id="password" name="password" autoComplete="new-password" required className={inputClass} />
+      </Field>
+    </AuthForm>
   );
 }
 

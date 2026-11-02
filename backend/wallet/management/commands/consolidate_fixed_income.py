@@ -20,13 +20,16 @@ class Command(BaseCommand):
         tickers = options["tickers"]
         user = User.objects.get()
 
-        assets = Order.objects.filter(user=user, asset_type="RF")
+        # Sem taxa (ex.: importação da B3) não há como projetar: vale o valor informado no arquivo.
+        assets = Order.objects.filter(
+            user=user, asset_type="RF", interest_rate__isnull=False
+        )
         AssetConsolidatedValue.objects.filter(
             user=user, asset_type="RF", volume=0
         ).delete()
 
         if tickers:
-            assets = Order.objects.filter(name__in=tickers)
+            assets = Order.objects.filter(name__in=tickers, interest_rate__isnull=False)
 
         for asset in assets:
             asset_name = asset.name

@@ -1,59 +1,31 @@
 'use client'
 
-import React, { createContext, useState, useEffect, ReactNode, useContext } from 'react';
+import React, { createContext, ReactNode, useContext } from 'react';
 import api from './api';
 
-interface User {
-  id: number;
-  username: string;
-  email: string;
-}
-
 interface AuthContextProps {
-  user: User | null;
-  login: (username: string, password: string) => Promise<any>; // Promise<void>
-  logout: () => void;
-  isAuthenticated: boolean;
+  login: (username: string, password: string) => Promise<boolean>;
+  logout: () => Promise<void>;
 }
 
 export const AuthContext = createContext<AuthContextProps | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(null);
-
   const login = async (username: string, password: string) => {
     try {
-      const response = await api.post<{ token: string; user: User }>('/login', { username, password });
-      const { token, user } = response.data;
-
-      setUser(user);
-
-      api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-
+      await api.post('/login', { username, password });
       return true;
-    } catch (error) {
-      console.error('Erro ao realizar login:', error);
+    } catch {
       return false;
     }
   };
 
   const logout = async () => {
-    try {
-      await api.post('/logout');
-      delete api.defaults.headers.common['Authorization'];
-      setUser(null);
-    } catch (error) {
-      console.error('Erro ao realizar logout:', error);
-    }
+    await api.post('/logout');
   };
 
-  return (
-    <AuthContext.Provider value={{ user, login, logout, isAuthenticated: !!user }}>
-      {children}
-    </AuthContext.Provider>
-  );
+  return <AuthContext.Provider value={{ login, logout }}>{children}</AuthContext.Provider>;
 };
-
 
 export const useAuth = () => {
   const context = useContext(AuthContext);

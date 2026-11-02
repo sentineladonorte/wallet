@@ -7,6 +7,8 @@ class Order(models.Model):
         ("AC", "Ações"),
         ("RF", "Renda Fixa"),
         ("FII", "Fundos de Investimento Imobiliário"),
+        ("BDR", "Brazilian Depositary Receipts"),
+        ("ETF", "Fundos de Índice"),
     ]
 
     ORDER_TYPES = [
@@ -27,7 +29,7 @@ class Order(models.Model):
         ("TD", "Tesouro Direto"),
     ]
 
-    name = models.CharField(max_length=32)
+    name = models.CharField(max_length=64)
     broker = models.CharField(max_length=32)
     asset_type = models.CharField(max_length=3, choices=ASSET_TYPES)
     order_type = models.IntegerField(choices=ORDER_TYPES)
@@ -42,6 +44,11 @@ class Order(models.Model):
         max_length=3, choices=FIXED_INCOME_CHOICES, null=True
     )
 
+    issuer = models.CharField(max_length=64, null=True, blank=True)
+    # Preço/data vieram de uma estimativa (ex.: importação da posição da B3)
+    # e ainda não foram confirmados pelo usuário.
+    cost_estimated = models.BooleanField(default=False)
+
     user = models.ForeignKey(User, on_delete=models.CASCADE)
 
     def __str__(self):
@@ -53,10 +60,12 @@ class AssetConsolidatedValue(models.Model):
         ("AC", "Ações"),
         ("RF", "Renda Fixa"),
         ("FII", "Fundos de Investimento Imobiliário"),
+        ("BDR", "Brazilian Depositary Receipts"),
+        ("ETF", "Fundos de Índice"),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE)
-    name = models.CharField(max_length=32)
+    name = models.CharField(max_length=64)
     asset_type = models.CharField(max_length=3, choices=ASSET_TYPES)
     date = models.DateField()
     value = models.DecimalField(max_digits=10, decimal_places=2)

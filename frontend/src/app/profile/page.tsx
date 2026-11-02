@@ -1,49 +1,33 @@
 'use client'
-import { NextPage } from 'next';
-import React, { useEffect, useState } from 'react';
-import Head from 'next/head';
+
+import React from 'react';
 import PersonIcon from '@mui/icons-material/Person';
-import api from '@/services/api';
+import { Card, ErrorState, LoadingState, PageHeader } from '@/components/ui';
+import { useApi } from '@/lib/useApi';
+import { User } from '@/types';
 
-
-const Profile: NextPage = () => {
-  const [user, setUser] = useState<any>({});
-  useEffect(() => {
-    api.get('/user').then(response => {
-      setUser(response.data);
-    })
-  }, []);
+const Profile: React.FC = () => {
+  const { data: user, isLoading, error, reload } = useApi<User>('/user');
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center">
-      <Head>
-        <title>Perfil</title>
-      </Head>
-      <div className="w-full max-w-md p-4 bg-gray-800 rounded-lg shadow-md">
-        <div className="flex flex-col items-center pb-4">
-          <PersonIcon className="w-24 h-24 text-gray-400" />
-          <h1 className="text-2xl font-semibold">{user?.username}</h1>
-          <p className="text-gray-400">{user?.email}</p>
-        </div>
-        <div className="w-full mt-4">
-          <h2 className="text-xl font-semibold">Informações</h2>
-          <div className="mt-2 space-y-2">
-            <div className="flex justify-between">
-              <span className="text-gray-400">Nome:</span>
-              <span>{user?.name}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Data de Nascimento:</span>
-              <span>{user?.birthdate}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Telefone:</span>
-              <span>{user?.phone}</span>
+    <>
+      <PageHeader title="Perfil" />
+      <Card className="max-w-md">
+        {isLoading && !user && <LoadingState />}
+        {error && !user && <ErrorState message={error} onRetry={reload} />}
+        {user && (
+          <div className="flex items-center gap-4">
+            <span className="flex items-center justify-center w-12 h-12 rounded-full bg-raised text-soft">
+              <PersonIcon />
+            </span>
+            <div className="min-w-0">
+              <p className="font-semibold truncate">{user.name || user.username}</p>
+              <p className="text-sm text-muted truncate">{user.email}</p>
             </div>
           </div>
-        </div>
-      </div>
-    </div>
+        )}
+      </Card>
+    </>
   );
 };
 

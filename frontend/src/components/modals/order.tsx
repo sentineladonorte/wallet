@@ -1,248 +1,149 @@
-import React, { useState } from "react";
+'use client'
+
+import React, { FormEvent, useState } from 'react';
+import { Button, Field, Modal, inputClass } from '@/components/ui';
+import { CLASS_LABELS } from '@/lib/assets';
+import { Order } from '@/types';
+
+export interface OrderFormData {
+  name: string;
+  broker: string;
+  assetType: string;
+  orderType: number;
+  date: string;
+  price: number | null;
+  volume: number | null;
+  description: string;
+  interestRate: number | null;
+  maturity: string | null;
+  index: string;
+  fixedIncomeType: string;
+  issuer: string;
+}
+
+const BROKERS = ['Nu Invest', 'Rico', 'XP'];
+const ORDER_CLASSES = ['AC', 'FII', 'ETF', 'BDR', 'RF'];
+
+const initialForm = (order?: Order): OrderFormData => ({
+  name: order?.name ?? '',
+  broker: order?.broker ?? 'Nu Invest',
+  assetType: order?.asset_type ?? 'AC',
+  orderType: order?.order_type ?? 1,
+  date: order?.date ?? '',
+  price: order?.price ?? null,
+  volume: order?.volume ?? null,
+  description: order?.description ?? '',
+  // Boleta importada não tem taxa: manter nulo evita projetar o título a 0%.
+  interestRate: order ? order.interest_rate : 0,
+  maturity: order?.maturity_date ?? null,
+  index: order?.index ?? 'P',
+  fixedIncomeType: order?.fixed_income_type ?? 'CDB',
+  issuer: order?.issuer ?? '',
+});
+
+const toNumber = (value: string) => (value === '' ? null : Number(value));
 
 const OrderModal: React.FC<{
+  order?: Order;
   onClose: () => void;
-  onSave: (data: any) => void;
-  order?: (string | number | null)[];
-}> = ({ onClose, onSave, order }) => {
+  onSave: (data: OrderFormData) => Promise<boolean>;
+}> = ({ order, onClose, onSave }) => {
+  const [form, setForm] = useState<OrderFormData>(initialForm(order));
+  const [isSaving, setIsSaving] = useState(false);
+  const isFixedIncome = form.assetType === 'RF';
 
-  const [formData, setFormData] = useState<any>({
-    id: order?.[0] || null,
-    name: order?.[1] || "",
-    broker: order?.[2] || "Nu Invest",
-    assetType: order?.[3] || "AC",
-    orderType: order?.[4] || 1,
-    date: order?.[5] || null,
-    price: order?.[6] || null,
-    volume: order?.[7] || null,
-    description: order?.[8] || "",
-    interestRate: order?.[9] || "0",
-    maturity: order?.[10] || null,
-    index: order?.[11] || "P",
-    fixedIncomeType: order?.[12] || "CDB",
-  });
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    const { name, value } = e.target;
-    if (name === "name") {
-      setFormData({ ...formData, [name]: value.toUpperCase() });
-    } else if (name === "price") {
-      setFormData({ ...formData, [name]: value ? Number(value) : null });
-    } else if (name === "volume") {
-      setFormData({ ...formData, [name]: value ? Number(value) : null });
-    } else if (name === "interestRate") {
-      setFormData({ ...formData, [name]: value ? Number(value) : null });
-    } else if (name === "orderType") {
-      setFormData({ ...formData, [name]: Number(value) });
-    } else {
-      setFormData({ ...formData, [name]: value });
-    }
+  const update = <K extends keyof OrderFormData>(field: K, value: OrderFormData[K]) => {
+    setForm((current) => ({ ...current, [field]: value }));
   };
 
-  const handleSave = (event: React.FormEvent<HTMLFormElement>) => {
+  const submit = async (event: FormEvent) => {
     event.preventDefault();
-    onSave(formData);
-    onClose();
+    setIsSaving(true);
+    const saved = await onSave(form);
+    setIsSaving(false);
+    if (saved) onClose();
   };
 
   return (
-    <div className="fixed top-0 left-0 w-full h-full flex items-center justify-center bg-opacity-50 bg-black z-50 text-black">
-      <div className="bg-white p-4 rounded-md shadow-md lg:w-2/5 lg:space-x-4">
-        <h2 className="text-2xl font-bold mb-4">Boleta</h2>
-        <form className="lg:flex lg:flex-wrap" onSubmit={handleSave}>
-
-          <div className="mb-4 lg:w-1/2 p-4">
-            <label htmlFor="broker" className="block text-sm font-semibold mb-2">Corretora:</label>
-            <select id="broker" name="broker" required value={formData.broker} onChange={handleChange} className="w-full px-4 py-2 border rounded-md">
-              <option value="Nu Invest">Nu Invest</option>
-              <option value="Rico">Rico</option>
-              <option value="XP">XP</option>
-            </select>
-          </div>
-
-          <div className="mb-4 lg:w-1/2 p-4">
-            <label htmlFor="assetType" className="block text-sm font-semibold mb-2">Classe:</label>
-            <select id="assetType" name="assetType" required value={formData.assetType} onChange={handleChange} className="w-full px-4 py-2 border rounded-md">
-              <option value="AC">Ações BR</option>
-              <option value="INT">Ativos Internacionais</option>
-              <option value="FII">Fundos de Investimento Imobiliário</option>
-              <option value="RF">Renda Fixa</option>
-            </select>
-          </div>
-
-          <div className="mb-4 lg:w-1/2 p-4">
-            <label htmlFor="name" className="block text-sm font-semibold mb-2">
-              Nome:
+    <Modal title={order ? `Editar boleta de ${order.name}` : 'Nova boleta'} onClose={onClose}>
+      <form onSubmit={submit} className="grid grid-cols-2 gap-4">
+        <Field label="Classe" htmlFor="assetType">
+          <select id="assetType" required className={inputClass} value={form.assetType} onChange={(event) => update('assetType', event.target.value)}>
+            {ORDER_CLASSES.map((value) => <option key={value} value={value}>{CLASS_LABELS[value]}</option>)}
+            {order && !ORDER_CLASSES.includes(order.asset_type) && <option value={order.asset_type}>{order.asset_type}</option>}
+          </select>
+        </Field>
+        <Field label="Corretora" htmlFor="broker">
+          <input id="broker" list="brokers" required maxLength={32} className={inputClass} value={form.broker} onChange={(event) => update('broker', event.target.value)} />
+          <datalist id="brokers">{BROKERS.map((value) => <option key={value} value={value} />)}</datalist>
+        </Field>
+        <Field label={isFixedIncome ? 'Nome do título' : 'Ticker'} htmlFor="name">
+          <input id="name" required maxLength={isFixedIncome ? 50 : 8} className={inputClass} value={form.name} onChange={(event) => update('name', event.target.value.toUpperCase())} />
+        </Field>
+        <fieldset>
+          <legend className="block text-xs font-medium text-soft mb-1.5">Operação</legend>
+          <div className="flex gap-4 py-2 text-sm">
+            <label className="flex items-center gap-1.5">
+              <input type="radio" name="orderType" checked={form.orderType === 1} onChange={() => update('orderType', 1)} /> Compra
             </label>
-            <input
-              type="text"
-              name="name"
-              id="name"
-              value={formData.name}
-              onChange={handleChange}
-              required
-              className="w-full px-4 py-2 border rounded-md"
-            />
+            <label className="flex items-center gap-1.5">
+              <input type="radio" name="orderType" checked={form.orderType === -1} onChange={() => update('orderType', -1)} /> Venda
+            </label>
           </div>
+        </fieldset>
+        <Field label="Data" htmlFor="date" className="col-span-2 sm:col-span-1">
+          <input id="date" type="date" required className={inputClass} value={form.date} onChange={(event) => update('date', event.target.value)} />
+        </Field>
+        <div className="col-span-2 sm:col-span-1 grid grid-cols-2 gap-4">
+          <Field label="Preço (R$)" htmlFor="price">
+            <input id="price" type="number" step="any" min="0" required className={inputClass} value={form.price ?? ''} onChange={(event) => update('price', toNumber(event.target.value))} />
+          </Field>
+          <Field label="Quantidade" htmlFor="volume">
+            <input id="volume" type="number" step="any" min="0" required className={inputClass} value={form.volume ?? ''} onChange={(event) => update('volume', toNumber(event.target.value))} />
+          </Field>
+        </div>
 
-          <div className="mb-4 lg:w-1/6 p-4">
-            <label htmlFor="orderType" className="block text-sm font-semibold mb-2">Operação:</label>
-            <div>
-              <input
-                type="radio"
-                id="buy"
-                name="orderType"
-                value={1}
-                checked={formData.orderType === 1}
-                onChange={handleChange}
-              />
-              <label htmlFor="buy"> Compra</label>
-            </div>
-            <div>
-              <input
-                type="radio"
-                id="sell"
-                name="orderType"
-                value={-1}
-                checked={formData.orderType === -1}
-                onChange={handleChange}
-              />
-              <label htmlFor="sell"> Venda</label>
-            </div>
-          </div>
-
-          {
-            formData?.assetType === 'RF' && (
-              <div className="mb-4 lg:w-2/6 p-4">
-                <label htmlFor="fixedIncomeType" className="block text-sm font-semibold mb-2">Tipo:</label>
-                <select id="fixedIncomeType" name="fixedIncomeType" required value={formData.fixedIncomeType} onChange={handleChange} className="w-full px-4 py-2 border rounded-md">
-                  <option value="CDB">CDB</option>
-                  <option value="LCA">LCA</option>
-                  <option value="LCI">LCI</option>
-                  <option value="TD">Tesouro Direto</option>
+        {isFixedIncome && (
+          <>
+            <Field label="Tipo" htmlFor="fixedIncomeType">
+              <select id="fixedIncomeType" required className={inputClass} value={form.fixedIncomeType} onChange={(event) => update('fixedIncomeType', event.target.value)}>
+                <option value="CDB">CDB</option>
+                <option value="LCA">LCA</option>
+                <option value="LCI">LCI</option>
+                <option value="TD">Tesouro Direto</option>
+              </select>
+            </Field>
+            <Field label="Emissor" htmlFor="issuer">
+              <input id="issuer" maxLength={64} className={inputClass} value={form.issuer} onChange={(event) => update('issuer', event.target.value)} />
+            </Field>
+            <Field label="Vencimento" htmlFor="maturity">
+              <input id="maturity" type="date" required className={inputClass} value={form.maturity ?? ''} onChange={(event) => update('maturity', event.target.value)} />
+            </Field>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Indexador" htmlFor="index">
+                <select id="index" required className={inputClass} value={form.index} onChange={(event) => update('index', event.target.value)}>
+                  <option value="P">Prefixado</option>
+                  <option value="S">Selic</option>
+                  <option value="I">IPCA</option>
                 </select>
-              </div>
-            )
-          }
+              </Field>
+              <Field label="Taxa (%)" htmlFor="interestRate">
+                <input id="interestRate" type="number" step="any" required={!order} className={inputClass} value={form.interestRate ?? ''} onChange={(event) => update('interestRate', toNumber(event.target.value))} />
+              </Field>
+            </div>
+          </>
+        )}
 
-          <div className="mb-4 lg:w-5/12 p-4">
-            <label htmlFor="name" className="block text-sm font-semibold mb-2">
-              Data:
-            </label>
-            <input
-              type="date"
-              name="date"
-              id="date"
-              value={formData.date}
-              onChange={handleChange}
-              required
-              className="w-full px-4 py-2 border rounded-md"
-            />
-          </div>
-          <div className="mb-4 lg:w-4/12 p-4">
-            <label htmlFor="name" className="block text-sm font-semibold mb-2">
-              Preço:
-            </label>
-            <input
-              type="number"
-              name="price"
-              id="price"
-              value={formData.price}
-              onChange={handleChange}
-              required
-              className="w-full px-4 py-2 border rounded-md"
-            />
-          </div>
+        <Field label="Descrição" htmlFor="description" className="col-span-2">
+          <input id="description" className={inputClass} value={form.description} onChange={(event) => update('description', event.target.value)} />
+        </Field>
 
-          <div className="mb-4 lg:w-3/12 p-4">
-            <label htmlFor="name" className="block text-sm font-semibold mb-2">
-              Volume:
-            </label>
-            <input
-              type="number"
-              name="volume"
-              id="volume"
-              value={formData.volume}
-              required
-              onChange={handleChange}
-              className="w-full px-4 py-2 border rounded-md"
-            />
-          </div>
-
-          {
-            formData?.assetType === 'RF' && (
-              <>
-                <div className="mb-4 lg:w-5/12 p-4">
-                  <label htmlFor="maturity" className="block text-sm font-semibold mb-2">
-                    Vencimento:
-                  </label>
-                  <input
-                    type="date"
-                    name="maturity"
-                    id="maturity"
-                    value={formData.maturity}
-                    onChange={handleChange}
-                    required
-                    className="w-full px-4 py-2 border rounded-md"
-                  />
-                </div>
-                <div className="mb-4 lg:w-4/12 p-4">
-                  <label htmlFor="index" className="block text-sm font-semibold mb-2">Index:</label>
-                  <select id="index" name="index" required value={formData.index} onChange={handleChange} className="w-full px-4 py-2 border rounded-md">
-                    <option value="P">Pré-fixado</option>
-                    <option value="S">Selic</option>
-                    <option value="I">IPCA</option>
-                  </select>
-                </div>
-
-                <div className="mb-4 lg:w-3/12 p-4">
-                  <label htmlFor="name" className="block text-sm font-semibold mb-2">
-                    Taxa:
-                  </label>
-                  <input
-                    type="number"
-                    name="interestRate"
-                    id="interestRate"
-                    value={formData.interestRate}
-                    required
-                    onChange={handleChange}
-                    className="w-full px-4 py-2 border rounded-md"
-                  />
-                </div>
-              </>
-            )
-          }
-
-
-          <div className="mb-4 w-full p-4">
-            <label htmlFor="name" className="block text-sm font-semibold mb-2">
-              Descrição:
-            </label>
-            <input
-              type="text"
-              name="description"
-              id="description"
-              value={formData.description}
-              onChange={handleChange}
-              className="w-full px-4 py-2 border rounded-md"
-            />
-          </div>
-          <button
-            type="submit"
-            className="bg-blue-500 text-white px-4 py-2 rounded-md mr-2"
-          >
-            Salvar
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            className="bg-gray-500 text-white px-4 py-2 rounded-md"
-          >
-            Fechar
-          </button>
-        </form>
-      </div>
-    </div>
+        <div className="col-span-2 flex justify-end gap-2">
+          <Button onClick={onClose}>Cancelar</Button>
+          <Button type="submit" variant="primary" disabled={isSaving}>Salvar</Button>
+        </div>
+      </form>
+    </Modal>
   );
 };
 

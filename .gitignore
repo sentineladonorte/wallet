@@ -1,2 +1,6 @@
 notes.txt
 certs/*
+.env
+backend/.env
+frontend/.env.development
+posicao-*.xlsx

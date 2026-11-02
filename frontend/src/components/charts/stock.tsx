@@ -1,81 +1,87 @@
+'use client'
+
 import React from 'react';
 import HighchartsReact from 'highcharts-react-official';
 import Highcharts from 'highcharts/highstock';
-import HighchartsExporting from 'highcharts/modules/exporting'
-import darkUnica from 'highcharts/themes/dark-unica';
+import { useFormat } from '@/lib/privacy';
+import { Order } from '@/types';
 
-if (typeof Highcharts === 'object') {
-  HighchartsExporting(Highcharts)
-}
+Highcharts.setOptions({
+  lang: {
+    months: ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'],
+    shortMonths: ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'],
+    weekdays: ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'],
+    rangeSelectorZoom: 'Período',
+    decimalPoint: ',',
+    thousandsSep: '.',
+  },
+});
 
-darkUnica(Highcharts);
+const isoToTimestamp = (iso: string) => {
+  const [year, month, day] = iso.split('-').map(Number);
+  return Date.UTC(year, month - 1, day);
+};
 
-interface StockProps {
-  data: number[][];
-  startDate: number;
-  dataOrders: (string | number)[][]
-}
+const orderPoints = (orders: Order[], orderType: 1 | -1) =>
+  orders
+    .filter((order) => order.order_type === orderType)
+    .map((order) => [isoToTimestamp(order.date), order.price])
+    .sort((a, b) => a[0] - b[0]);
 
-const Stock: React.FC<StockProps> = ({ data, startDate, dataOrders }) => {
+const AXIS_STYLE = {
+  gridLineColor: '#2a2a28',
+  lineColor: '#383835',
+  tickColor: '#383835',
+  labels: { style: { color: '#98978d' } },
+};
 
-  const stockOptions = {
-    legend: {
-      enabled: true,
-    },
-    yAxis: [{
-      labels: {
-        align: 'left',
+const Stock: React.FC<{ data: number[][]; orders: Order[] }> = ({ data, orders }) => {
+  const { hidden } = useFormat();
+  // O preço é de mercado, mas os pontos revelariam o preço pago em cada boleta.
+  const visibleOrders = hidden ? [] : orders;
+  const options: Highcharts.Options = {
+    chart: { backgroundColor: 'transparent', style: { fontFamily: 'inherit' } },
+    credits: { enabled: false },
+    legend: { enabled: true, itemStyle: { color: '#c3c2b7' }, itemHoverStyle: { color: '#f0efec' } },
+    navigator: { enabled: false },
+    scrollbar: { enabled: false },
+    rangeSelector: {
+      selected: 3,
+      buttons: [
+        { type: 'month', count: 1, text: '1M' },
+        { type: 'month', count: 3, text: '3M' },
+        { type: 'month', count: 6, text: '6M' },
+        { type: 'year', count: 1, text: '1A' },
+        { type: 'all', text: 'Tudo' },
+      ],
+      inputEnabled: false,
+      buttonTheme: {
+        fill: 'transparent',
+        style: { color: '#98978d' },
+        states: {
+          hover: { fill: '#242422', style: { color: '#f0efec' } },
+          select: { fill: '#242422', style: { color: '#f0efec' } },
+        },
       },
-      title: {
-        text: 'R$'
-      }
-    }],
-    xAxis: {
-      type: 'datetime',
-      min: 949363200000, // 01/01/2000
+      labelStyle: { color: '#98978d' },
     },
+    tooltip: { backgroundColor: '#242422', borderColor: '#383835', style: { color: '#f0efec' }, valuePrefix: 'R$ ', valueDecimals: 2 },
+    xAxis: { ...AXIS_STYLE, type: 'datetime' },
+    yAxis: { ...AXIS_STYLE, title: { text: 'R$', style: { color: '#98978d' } }, opposite: false },
     series: [
+      { type: 'line', name: 'Preço', data, color: '#3987e5', lineWidth: 2 },
       {
-        data: data,
-        // type: 'ohlc',
-        type: 'areaspline',
-        name: 'Preço',
-        // id: ticker,
-        fillColor: {
-          linearGradient: {
-            x1: 0,
-            y1: 0,
-            x2: 0,
-            y2: 1
-          },
-          stops: [
-            [0, Highcharts?.getOptions()?.colors?.[0]],
-            [1, Highcharts?.color(Highcharts?.getOptions()?.colors?.[0] || "#FFF").setOpacity(0).get('rgba')]
-          ]
-        }
+        type: 'scatter', name: 'Compra', data: orderPoints(visibleOrders, 1), color: '#0ca30c',
+        marker: { enabled: true, symbol: 'triangle', radius: 6 }, tooltip: { pointFormat: 'Compra: <b>R$ {point.y:.2f}</b>' },
       },
       {
-        data: dataOrders?.filter(e => e[4] == 1)?.map(e => [e[13], e[6]]),
-        name: 'Compra',
-        type: 'scatter',
-        color: 'red',
+        type: 'scatter', name: 'Venda', data: orderPoints(visibleOrders, -1), color: '#d03b3b',
+        marker: { enabled: true, symbol: 'triangle-down', radius: 6 }, tooltip: { pointFormat: 'Venda: <b>R$ {point.y:.2f}</b>' },
       },
-      {
-        data: dataOrders?.filter(e => e[4] == -1)?.map(e => [e[13], e[6]]),
-        name: 'Venda',
-        type: 'scatter',
-        color: 'green',
-      }
-    ]
-  }
-  if (startDate) stockOptions.xAxis.min = startDate;
+    ],
+  };
 
-
-  return (
-    <div>
-      <HighchartsReact highcharts={Highcharts} constructorType={'stockChart'} options={stockOptions} />
-    </div>
-  );
+  return <HighchartsReact highcharts={Highcharts} constructorType="stockChart" options={options} />;
 };
 
 export default Stock;

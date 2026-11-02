@@ -1,84 +1,158 @@
 'use client'
-import api from '../services/api';
-import React, { useEffect, useState } from 'react';
-import { Patrimony } from "../components/charts/patrimony";
-import { DynamicDoughnut } from "../components/charts/dynamicDoughnut";
-import PositionTable from "../components/positionsTable";
 
+import React, { useState } from 'react';
+import Link from 'next/link';
+import UploadFileIcon from '@mui/icons-material/UploadFile';
+import { Patrimony } from '@/components/charts/patrimony';
+import AllocationExplorer from '@/components/dashboard/allocationExplorer';
+import Insights from '@/components/dashboard/insights';
+import ClassificationModal from '@/components/modals/classification';
+import PositionsTable from '@/components/positionsTable';
+import { Button, Card, CardTitle, EmptyState, ErrorState, LoadingState, PageHeader, ProfitText } from '@/components/ui';
+import {
+  AllocationFilter, AllocationGroup, Dimension, applyFilters, availableDimensions, nextDimension,
+} from '@/lib/allocation';
+import { investidor10Url } from '@/lib/assets';
+import { formatSignedPercent } from '@/lib/format';
+import { useFormat } from '@/lib/privacy';
+import { useApi } from '@/lib/useApi';
+import { Position, PositionHistory, PositionResponse } from '@/types';
+
+const Stat: React.FC<{ label: string; children: React.ReactNode; detail?: React.ReactNode }> = ({ label, children, detail }) => (
+  <Card>
+    <p className="text-xs text-muted mb-1">{label}</p>
+    <p className="text-xl sm:text-2xl font-semibold tabular-nums">{children}</p>
+    {detail && <p className="text-xs text-muted mt-1">{detail}</p>}
+  </Card>
+);
 
 export default function Home() {
-  const [dataAssets, setDataAssets] = useState<any>([]);
-  const [dataPatrimony, setDataPatrimony] = useState<any>([]);
-  const [selectedClass, setSelectedClass] = useState<string>('All');
+  const { formatCurrency, formatSignedCurrency } = useFormat();
+  const { data, isLoading, error, reload } = useApi<PositionResponse>('/position');
+  const [filters, setFilters] = useState<AllocationFilter[]>([]);
+  const [dimension, setDimension] = useState<Dimension>('asset_class');
+  const [editing, setEditing] = useState<Position | null>(null);
 
-  useEffect(() => {
-    const params = new URLSearchParams();
-    if (selectedClass !== 'All') params.append('class', selectedClass);
+  const classFilter = filters.find((filter) => filter.dimension === 'asset_class');
+  const onlyClassFiltered = filters.length === 1 && classFilter;
+  const history = useApi<PositionHistory>(
+    '/position-history',
+    onlyClassFiltered ? { class: classFilter.key } : undefined,
+  );
 
-    const url = `/position?${params.toString()}`;
+  if (isLoading && !data) return <LoadingState label="Carregando carteira..." />;
+  if (error && !data) return <ErrorState message={error} onRetry={reload} />;
+  if (!data) return null;
 
-    api.get(url).then(response => {
-      setDataAssets(response.data)
-    })
+  const { assets, summary } = data;
 
-  }, [selectedClass])
+  if (assets.length === 0) {
+    return (
+      <>
+        <PageHeader title="Carteira" />
+        <Card>
+          <EmptyState
+            title="Sua carteira está vazia"
+            description="Importe o relatório de posição da B3 para começar, ou registre as boletas uma a uma."
+            action={(
+              <Link href="/orders?import=1">
+                <Button variant="primary"><UploadFileIcon fontSize="small" /> Importar da B3</Button>
+              </Link>
+            )}
+          />
+        </Card>
+      </>
+    );
+  }
 
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const params = new URLSearchParams();
-        if (selectedClass !== 'All') params.append('class', selectedClass);
+  const selected = applyFilters(assets, filters);
+  const selectedTotal = selected.reduce((sum, asset) => sum + (asset.value ?? 0), 0);
 
-        const url = `/position-history?${params.toString()}`;
-        const response = await api.get(url);
-        setDataPatrimony(response.data);
-      } catch (error) {
-        console.error('Erro ao buscar dados:', error);
-      }
-    };
+  const selectGroup = (group: AllocationGroup) => {
+    if (dimension === 'name') {
+      const asset = selected.find((item) => item.name === group.key);
+      const url = asset && investidor10Url(asset.asset_class, asset.name);
+      if (url) window.open(url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    const nextFilters = [...filters, { dimension, key: group.key, label: group.label }];
+    setFilters(nextFilters);
+    setDimension(nextDimension(applyFilters(assets, nextFilters), dimension));
+  };
 
-    fetchData();
-  }, [selectedClass]);
-
-  const handleClassChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
-    setSelectedClass(event.target.value);
+  const goToDepth = (depth: number) => {
+    const nextFilters = filters.slice(0, depth);
+    setFilters(nextFilters);
+    if (depth === filters.length) return;
+    // Volta para a dimensão do filtro removido, que é a visão de onde o usuário desceu.
+    const removed = filters[depth].dimension;
+    setDimension(availableDimensions(nextFilters).some(({ key }) => key === removed) ? removed : 'asset_class');
   };
 
   return (
-    <main className="flex h-screen flex-col">
-      <div className="flex justify-end mt-4 mr-16 text-black">
-        <label htmlFor="classSelector" className="mr-2">
-          Selecione a classe:
-        </label>
-        <select
-          id="classSelector"
-          value={selectedClass}
-          onChange={handleClassChange}
-          className="px-4 py-2 w-32 rounded-md border border-gray-300 focus:outline-none focus:ring focus:border-blue-500"
-        >
-          <option value="All">Tudo</option>
-          <option value="AC">Ações</option>
-          <option value="FII">FIIs</option>
-          <option value="RF">Renda Fixa</option>
-        </select>
-      </div>
-      <div className="flex justify-around">
-        <div className="flex w-1/5 items-center justify-center">
-          <DynamicDoughnut data={[
-            ...((dataAssets.asset_classes && Object.keys(dataAssets.asset_classes).length > 0) ? [dataAssets.asset_classes] : []),
-            ...((dataAssets.categories && Object.keys(dataAssets.categories).length > 0) ? [dataAssets.categories] : [])
-          ]} />
-        </div>
-        <div className="flex w-3/5 flex-col gap-4">
-          <div className="flex flex-grow items-center justify-center">
-            <Patrimony data={dataPatrimony} />
-          </div>
-        </div>
-      </div>
-      <div className="flex justify-center py-20">
+    <>
+      <PageHeader
+        title="Carteira"
+        action={(
+          <Link href="/orders?import=1">
+            <Button><UploadFileIcon fontSize="small" /> Importar da B3</Button>
+          </Link>
+        )}
+      />
 
-        <PositionTable assets={dataAssets.assets} />
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <Stat label="Patrimônio">{formatCurrency(summary.value)}</Stat>
+          <Stat label="Investido" detail={summary.estimated_assets > 0 ? `${summary.estimated_assets} ativo(s) com custo estimado` : undefined}>
+            {formatCurrency(summary.invested)}
+          </Stat>
+          <Stat label="Resultado" detail={formatSignedPercent(summary.profit_pct)}>
+            <ProfitText value={summary.profit}>{formatSignedCurrency(summary.profit)}</ProfitText>
+          </Stat>
+          <Stat label="Ativos" detail={summary.assets_without_price > 0 ? `${summary.assets_without_price} sem preço, fora dos totais` : undefined}>
+            {summary.assets}
+          </Stat>
+        </div>
+
+        <div className="grid xl:grid-cols-5 gap-4">
+          <div className="xl:col-span-3 min-w-0">
+          <AllocationExplorer
+            assets={selected}
+            filters={filters}
+            dimension={dimension}
+            onDimensionChange={setDimension}
+            onSelect={selectGroup}
+            onBreadcrumb={goToDepth}
+          />
+          </div>
+          <Card className="xl:col-span-2">
+            <CardTitle>Evolução{onlyClassFiltered ? `: ${classFilter.label}` : ''}</CardTitle>
+            {history.data && history.data.labels.length > 0 ? (
+              <>
+                <Patrimony data={history.data} />
+                {history.data.labels.length === 1 && (
+                  <p className="text-xs text-muted mt-2">O gráfico ganha linha a partir da próxima importação.</p>
+                )}
+              </>
+            ) : (
+              <EmptyState title="Ainda sem histórico" description="O histórico é gravado a cada importação da posição." />
+            )}
+          </Card>
+        </div>
+
+        <Insights assets={selected} />
+
+        <Card>
+          <CardTitle>
+            Posições{filters.length > 0 ? `: ${filters.map((filter) => filter.label).join(' › ')}` : ''}
+          </CardTitle>
+          <PositionsTable assets={selected} total={selectedTotal} onEditClassification={setEditing} />
+        </Card>
       </div>
-    </main>
-  )
+
+      {editing && (
+        <ClassificationModal asset={editing} assets={assets} onClose={() => setEditing(null)} onSaved={reload} />
+      )}
+    </>
+  );
 }

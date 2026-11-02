@@ -1,53 +1,40 @@
 'use client'
 
-import { FormEvent } from 'react'
+import { FormEvent, useState } from 'react'
+import AuthForm from '@/components/authForm';
+import { Field, inputClass } from '@/components/ui';
 import { useAuth } from '@/services/authContext';
 
 const LoginPage = () => {
   const { login } = useAuth();
+  const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const formData = new FormData(event.currentTarget)
-    const username = formData.get('username')?.toString() ?? '';
-    const password = formData.get('password')?.toString() ?? '';
+    const formData = new FormData(event.currentTarget);
+    setIsSubmitting(true);
+    setError(null);
 
-    const response = await login(username, password);
+    const success = await login(formData.get('username')?.toString() ?? '', formData.get('password')?.toString() ?? '');
 
-    if (response) window.location.href = '/';
-
+    if (success) {
+      window.location.href = '/';
+    } else {
+      setError('Usuário ou senha inválidos.');
+      setIsSubmitting(false);
+    }
   };
 
   return (
-    <div className="flex justify-center items-center h-screen bg-gray-800">
-      <form onSubmit={handleLogin} className="p-10 bg-gray-700 rounded-lg shadow-md max-w-lg w-full">
-        <h2 className="text-2xl font-semibold text-center text-white mb-8">Login</h2>
-        <div className="mb-6">
-          <label htmlFor="username" className="block mb-2 text-sm font-medium text-gray-300">Usuário:</label>
-          <input
-            type="text"
-            id="username"
-            name='username'
-            required
-            className="w-full p-3 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-gray-800 text-white"
-          />
-        </div>
-        <div className="mb-6">
-          <label htmlFor="password" className="block mb-2 text-sm font-medium text-gray-300">Senha:</label>
-          <input
-            type="password"
-            id="password"
-            name='password'
-            required
-            className="w-full p-3 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-gray-800 text-white"
-          />
-        </div>
-        <button type="submit" className="w-full p-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">Entrar</button>
-        <div className="mt-4">
-          <a href="/auth/register" className="text-blue-300 hover:text-blue-500">Novo cadastro</a>
-        </div>
-      </form>
-    </div>
+    <AuthForm title="Entre na sua conta" submitLabel="Entrar" error={error} isSubmitting={isSubmitting} footerHref="/auth/register" footerLabel="Criar uma conta" onSubmit={handleLogin}>
+      <Field label="Usuário" htmlFor="username">
+        <input type="text" id="username" name="username" autoComplete="username" required className={inputClass} />
+      </Field>
+      <Field label="Senha" htmlFor="password">
+        <input type="password" id="password" name="password" autoComplete="current-password" required className={inputClass} />
+      </Field>
+    </AuthForm>
   );
 }
 

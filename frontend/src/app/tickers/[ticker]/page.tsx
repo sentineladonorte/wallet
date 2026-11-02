@@ -1,44 +1,92 @@
 'use client'
 
-import React, { useEffect, useState } from 'react';
-import api from '../../../services/api';
-import Stock from '../../../components/charts/stock';
-import { Patrimony } from '../../../components/charts/patrimony';
+import React from 'react';
+import dynamic from 'next/dynamic';
+import { Patrimony } from '@/components/charts/patrimony';
+import AssetLink from '@/components/assetLink';
+import OrdersTable from '@/components/ordersTable';
+import { Card, CardTitle, EmptyState, EstimatedBadge, LoadingState, PageHeader, ProfitText } from '@/components/ui';
+import { classLabel } from '@/lib/assets';
+import { formatDate, formatSignedPercent } from '@/lib/format';
+import { useFormat } from '@/lib/privacy';
+import { useApi } from '@/lib/useApi';
+import { Order, PositionHistory, PositionResponse } from '@/types';
 
-const TickerChart: React.FC<any> = ({ params }) => {
-  const { ticker } = params;
-  const [dataPatrimony, setDataPatrimony] = useState<any>([]);
-  const [dataStock, setDataStock] = useState<any>([]);
-  const [dataOrders, setDataOrders] = useState<any>([]);
-  const [startDate, setStartDate] = useState<any>();
+// O Highcharts depende do navegador e não roda na renderização do servidor.
+const Stock = dynamic(() => import('@/components/charts/stock'), { ssr: false });
 
-  useEffect(() => {
-    api.get(`/position-history`, { params: { ticker } }).then(response => {
-      setDataPatrimony(response.data)
-      setStartDate(Date.UTC(
-        parseInt(response.data?.labels?.[0].split('/')[2], 10),
-        parseInt(response.data?.labels?.[0].split('/')[1], 10) - 1,
-        parseInt(response.data?.labels?.[0].split('/')[0], 10),
-      ))
-    })
+const Detail: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
+  <div>
+    <dt className="text-xs text-muted">{label}</dt>
+    <dd className="font-medium tabular-nums">{children}</dd>
+  </div>
+);
 
-    api.get(`/asset/${ticker}`).then(response => {
-      setDataStock(response.data)
-    })
+const TickerPage: React.FC<{ params: { ticker: string } }> = ({ params }) => {
+  const { formatCurrency, formatQuantity } = useFormat();
+  const ticker = decodeURIComponent(params.ticker).toUpperCase();
+  const position = useApi<PositionResponse>('/position');
+  const history = useApi<PositionHistory>('/position-history', { ticker });
+  const prices = useApi<number[][]>(`/asset/${encodeURIComponent(ticker)}/`);
+  const orders = useApi<Order[]>('/orders/', { ticker });
 
-    api.get(`/orders`, { params: { ticker } }).then(response => {
-      setDataOrders(response.data)
-    })
-  }, [ticker])
+  const asset = position.data?.assets.find((item) => item.name === ticker);
+  const orderClass = orders.data?.[0]?.asset_type;
 
   return (
-    <main className="flex h-screen flex-col">
-      <div className="flex h-1/2 w-1/2">
-        <Patrimony data={dataPatrimony} />
+    <>
+      <PageHeader
+        title={ticker}
+        subtitle={asset?.description ?? undefined}
+        action={<AssetLink name={ticker} assetClass={asset?.asset_class ?? orderClass ?? null} className="text-sm" label="Abrir no Investidor10" />}
+      />
+
+      <div className="space-y-4">
+        {position.isLoading && !position.data && <LoadingState />}
+
+        {asset && (
+          <Card>
+            <dl className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+              <Detail label="Classe">{classLabel(asset.asset_class)}</Detail>
+              <Detail label="Categoria">{asset.category || '-'}</Detail>
+              <Detail label="Quantidade">{formatQuantity(asset.volume)}</Detail>
+              <Detail label="Preço médio">
+                {formatCurrency(asset.volume ? asset.cost / asset.volume : null)}
+                {asset.cost_estimated && <EstimatedBadge />}
+              </Detail>
+              <Detail label="Valor">{formatCurrency(asset.value)}</Detail>
+              <Detail label="Resultado">
+                <ProfitText value={asset.profit}>{formatSignedPercent(asset.profit_pct)}</ProfitText>
+              </Detail>
+              {asset.issuer && <Detail label="Emissor">{asset.issuer}</Detail>}
+              {asset.maturity_date && <Detail label="Vencimento">{formatDate(asset.maturity_date)}</Detail>}
+            </dl>
+          </Card>
+        )}
+
+        <Card>
+          <CardTitle>Preço</CardTitle>
+          {prices.data && prices.data.length > 0
+            ? <Stock data={prices.data} orders={orders.data ?? []} />
+            : !prices.isLoading && <EmptyState title="Sem cotações" description="Títulos de renda fixa não têm cotação diária, e os demais ativos podem ainda não ter sido importados." />}
+        </Card>
+
+        {history.data && history.data.labels.length > 0 && (
+          <Card>
+            <CardTitle>Evolução da posição</CardTitle>
+            <Patrimony data={history.data} />
+          </Card>
+        )}
+
+        <Card>
+          <CardTitle>Boletas</CardTitle>
+          {orders.data && orders.data.length > 0
+            ? <OrdersTable orders={orders.data} onChanged={() => { orders.reload(); position.reload(); }} />
+            : !orders.isLoading && <EmptyState title="Nenhuma boleta deste ativo" />}
+        </Card>
       </div>
-      <Stock data={dataStock} dataOrders={dataOrders} startDate={startDate} />
-    </main>
+    </>
   );
 };
 
-export default TickerChart;
+export default TickerPage;
