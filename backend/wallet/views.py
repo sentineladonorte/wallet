@@ -1,5 +1,5 @@
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from django.http import JsonResponse
 from app.models import AssetPrice, Asset
 from wallet.b3_import import (
@@ -9,11 +9,12 @@ from wallet.b3_import import (
     parse_position_file,
     plan_to_dict,
 )
-from wallet.models import AssetConsolidatedValue, Order
+from wallet.models import AllocationTarget, AssetConsolidatedValue, Order
 from wallet.positions import summarize_orders
 import pandas as pd
 from django.views.decorators.csrf import csrf_exempt
 import json
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
@@ -28,6 +29,9 @@ FIXED_INCOME_NAMES = {
 NOT_AUTHENTICATED = {"message": "Usuário não autenticado"}
 
 MAX_IMPORT_FILE_BYTES = 1024 * 1024
+# INT é a classe das boletas antigas, anterior a BDR e ETF.
+TARGET_CLASSES = {code for code, _ in Order.ASSET_TYPES} | {"INT"}
+MAX_TARGET_CATEGORY_LENGTH = 64
 
 
 def _variable_income_details(name):
@@ -231,6 +235,98 @@ def orders(request):
         user_orders = user_orders.filter(name=ticker.upper())
 
     return JsonResponse([_order_to_dict(order) for order in user_orders], safe=False)
+
+
+def _targets_to_dict(user):
+    result = {"classes": {}, "categories": {}}
+    for target in AllocationTarget.objects.filter(user=user).order_by("asset_class", "category"):
+        percent = float(target.percent)
+        if target.category:
+            result["categories"].setdefault(target.asset_class, {})[target.category] = percent
+        else:
+            result["classes"][target.asset_class] = percent
+    return result
+
+
+def _parse_target_percent(raw):
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        raise ValueError("Informe a meta em percentual")
+    try:
+        percent = Decimal(str(raw))
+    except InvalidOperation:
+        raise ValueError("Informe a meta em percentual")
+    if not percent.is_finite() or percent < 0 or percent > 100:
+        raise ValueError("Cada meta precisa ficar entre 0% e 100%")
+    return percent.quantize(Decimal("0.01"))
+
+
+def _parse_target_key(raw, asset_class):
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError("Informe o nome da meta")
+    key = raw.strip()
+    if asset_class is None and key not in TARGET_CLASSES:
+        raise ValueError(f"Classe desconhecida: {key}")
+    if len(key) > MAX_TARGET_CATEGORY_LENGTH:
+        raise ValueError(f"Use no máximo {MAX_TARGET_CATEGORY_LENGTH} caracteres")
+    return key
+
+
+def _parse_targets(data):
+    """Retorna (classe ou None para o nível da carteira, {chave: percentual})."""
+    if not isinstance(data, dict) or not isinstance(data.get("targets"), list):
+        raise ValueError("Dados inválidos")
+
+    asset_class = data.get("asset_class")
+    if asset_class is not None and asset_class not in TARGET_CLASSES:
+        raise ValueError(f"Classe desconhecida: {asset_class}")
+
+    parsed = {}
+    for entry in data["targets"]:
+        if not isinstance(entry, dict):
+            raise ValueError("Dados inválidos")
+        key = _parse_target_key(entry.get("key"), asset_class)
+        if key in parsed:
+            raise ValueError(f"Meta repetida: {key}")
+        parsed[key] = _parse_target_percent(entry.get("percent"))
+
+    if sum(parsed.values(), Decimal(0)) > 100:
+        raise ValueError("A soma das metas não pode passar de 100%")
+    return asset_class, parsed
+
+
+def _replace_targets(user, asset_class, parsed):
+    if asset_class is None:
+        scope = AllocationTarget.objects.filter(user=user, category="")
+        rows = [AllocationTarget(user=user, asset_class=key, percent=percent) for key, percent in parsed.items()]
+    else:
+        scope = AllocationTarget.objects.filter(user=user, asset_class=asset_class).exclude(category="")
+        rows = [
+            AllocationTarget(user=user, asset_class=asset_class, category=key, percent=percent)
+            for key, percent in parsed.items()
+        ]
+    with transaction.atomic():
+        scope.delete()
+        AllocationTarget.objects.bulk_create(rows)
+
+
+@csrf_exempt
+def targets(request):
+    user = request.user
+    if not user.is_authenticated:
+        return JsonResponse(NOT_AUTHENTICATED, status=401)
+    if request.method == "GET":
+        return JsonResponse(_targets_to_dict(user))
+    if request.method != "PUT":
+        return JsonResponse({"message": "Método não permitido"}, status=400)
+
+    try:
+        asset_class, parsed = _parse_targets(json.loads(request.body.decode("utf-8")))
+    except ValueError as error:
+        message = str(error) if not isinstance(error, json.JSONDecodeError) else "Dados inválidos"
+        return JsonResponse({"message": message}, status=400)
+
+    _replace_targets(user, asset_class, parsed)
+    return JsonResponse(_targets_to_dict(user))
 
 
 def _read_import_request(request):

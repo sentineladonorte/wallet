@@ -77,3 +77,23 @@ class AssetConsolidatedValue(models.Model):
 
     class Meta:
         unique_together = ["user", "name", "date"]
+
+
+class AllocationTarget(models.Model):
+    """Meta de alocação: da classe na carteira ou, com `category`, da categoria dentro da classe."""
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    asset_class = models.CharField(max_length=3)
+    category = models.CharField(max_length=64, blank=True, default="")
+    percent = models.DecimalField(max_digits=5, decimal_places=2)
+
+    def __str__(self):
+        return f"{self.user} - {self.asset_class} {self.category} - {self.percent}%"
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "asset_class", "category"],
+                name="unique_allocation_target",
+            )
+        ]

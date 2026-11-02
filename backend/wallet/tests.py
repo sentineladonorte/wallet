@@ -12,7 +12,7 @@ from openpyxl import Workbook
 
 from app.models import Asset, AssetPrice
 from wallet.b3_import import ImportFileError, apply_plan, build_plan, parse_position_file
-from wallet.models import AssetConsolidatedValue, Order
+from wallet.models import AllocationTarget, AssetConsolidatedValue, Order
 
 NU = "NU INVESTIMENTOS S.A. - CTVM"
 SNAPSHOT = date(2026, 11, 2)
@@ -836,3 +836,104 @@ class ImportEndpointsTests(TestCase):
         self.client.force_login(self.user)
 
         self.assertEqual(self.client.get(PREVIEW_URL).status_code, 400)
+
+
+class AllocationTargetsTests(TestCase):
+    URL = "/api/targets"
+
+    def setUp(self):
+        self.user = User.objects.create_user("investidor", password="senha")
+        self.client.force_login(self.user)
+
+    def put(self, asset_class=None, **targets):
+        return self.put_raw({
+            "asset_class": asset_class,
+            "targets": [{"key": key, "percent": percent} for key, percent in targets.items()],
+        })
+
+    def put_raw(self, data):
+        return self.client.put(self.URL, data=data, content_type="application/json")
+
+    def test_requires_authentication(self):
+        self.client.logout()
+
+        self.assertEqual(self.client.get(self.URL).status_code, 401)
+        self.assertEqual(self.put(AC=10).status_code, 401)
+
+    def test_starts_empty(self):
+        self.assertEqual(self.client.get(self.URL).json(), {"classes": {}, "categories": {}})
+
+    def test_saves_class_and_category_levels_separately(self):
+        self.assertEqual(self.put(AC=25, FII=25, RF=50).status_code, 200)
+        response = self.put("AC", Bancos=20, Saneamento=20.5)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {
+            "classes": {"AC": 25.0, "FII": 25.0, "RF": 50.0},
+            "categories": {"AC": {"Bancos": 20.0, "Saneamento": 20.5}},
+        })
+
+    def test_saving_a_level_replaces_only_that_level(self):
+        self.put(AC=25, FII=25)
+        self.put("AC", Bancos=20, Saneamento=20)
+        self.put("RF", IPCA=50)
+
+        self.put(AC=40)
+        body = self.put("AC", Bancos=30).json()
+
+        self.assertEqual(body["classes"], {"AC": 40.0})
+        self.assertEqual(body["categories"], {"AC": {"Bancos": 30.0}, "RF": {"IPCA": 50.0}})
+
+    def test_empty_list_clears_level(self):
+        self.put("AC", Bancos=20)
+
+        self.assertEqual(self.put("AC").json()["categories"], {})
+
+    def test_zero_is_a_valid_target(self):
+        self.assertEqual(self.put(BDR=0).json()["classes"], {"BDR": 0.0})
+
+    def test_targets_are_per_user(self):
+        self.put(AC=25)
+        other = User.objects.create_user("outro", password="senha")
+        self.client.force_login(other)
+
+        self.assertEqual(self.client.get(self.URL).json()["classes"], {})
+        self.put(AC=70)
+        self.assertEqual(AllocationTarget.objects.get(user=self.user).percent, Decimal("25.00"))
+
+    def test_sum_can_be_exactly_100_but_not_more(self):
+        self.assertEqual(self.put(AC=33.33, FII=33.33, RF=33.34).status_code, 200)
+        self.assertEqual(self.put(AC=60, FII=40.01).status_code, 400)
+        self.assertEqual(self.client.get(self.URL).json()["classes"]["AC"], 33.33)
+
+    def test_rejects_invalid_data_without_changing_saved_targets(self):
+        self.put(AC=25)
+        invalid = [
+            {},
+            {"targets": "x"},
+            ["x"],
+            {"targets": ["x"]},
+            {"asset_class": "XX", "targets": []},
+            {"targets": [{"key": "XX", "percent": 10}]},
+            {"targets": [{"key": "AC", "percent": -1}]},
+            {"targets": [{"key": "AC", "percent": 101}]},
+            {"targets": [{"key": "AC", "percent": "NaN"}]},
+            {"targets": [{"key": "AC", "percent": "abc"}]},
+            {"targets": [{"key": "AC", "percent": True}]},
+            {"targets": [{"key": "AC", "percent": None}]},
+            {"targets": [{"key": "AC", "percent": 1}, {"key": "AC", "percent": 2}]},
+            {"asset_class": "AC", "targets": [{"key": "  ", "percent": 1}]},
+            {"asset_class": "AC", "targets": [{"key": "x" * 65, "percent": 1}]},
+        ]
+        for data in invalid:
+            response = self.put_raw(data)
+            self.assertEqual(response.status_code, 400, data)
+            self.assertIn("message", response.json())
+
+        self.assertEqual(self.client.get(self.URL).json()["classes"], {"AC": 25.0})
+
+    def test_rejects_malformed_json_and_other_methods(self):
+        response = self.client.put(self.URL, data="{", content_type="application/json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.client.post(self.URL).status_code, 400)
