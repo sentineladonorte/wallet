@@ -25,6 +25,11 @@ urlpatterns = [
     path("api/admin/", admin.site.urls),
     path("api/assets", asset_views.asset, name="asset"),
     path("api/asset/<str:ticker>/", asset_views.asset_prices, name="prices"),
+    path(
+        "api/asset/<str:ticker>/classification",
+        asset_views.asset_classification,
+        name="asset_classification",
+    ),
     path("api/orders/", wallet_views.orders, name="orders"),
     path(
         "api/orders/import/preview", wallet_views.import_preview, name="import_preview"
