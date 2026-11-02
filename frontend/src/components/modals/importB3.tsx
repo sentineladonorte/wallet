@@ -3,7 +3,8 @@
 import React, { useState } from 'react';
 import { Button, Field, Modal, inputClass } from '@/components/ui';
 import { useToast } from '@/components/ui/toast';
-import { formatCurrency, formatDate, formatQuantity } from '@/lib/format';
+import { formatDate } from '@/lib/format';
+import { useFormat } from '@/lib/privacy';
 import { errorMessage } from '@/lib/useApi';
 import api from '@/services/api';
 
@@ -39,6 +40,7 @@ interface Preview {
 }
 
 const PlannedOrders: React.FC<{ title: string; orders: PlannedOrder[] }> = ({ title, orders }) => {
+  const { formatCurrency, formatQuantity } = useFormat();
   if (orders.length === 0) return null;
 
   return (
@@ -76,6 +78,7 @@ const PlannedOrders: React.FC<{ title: string; orders: PlannedOrder[] }> = ({ ti
 };
 
 const ImportB3Modal: React.FC<{ onClose: () => void; onImported: () => void }> = ({ onClose, onImported }) => {
+  const { formatCurrency, formatQuantity } = useFormat();
   const toast = useToast();
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);

@@ -3,6 +3,7 @@
 import React from 'react';
 import HighchartsReact from 'highcharts-react-official';
 import Highcharts from 'highcharts/highstock';
+import { useFormat } from '@/lib/privacy';
 import { Order } from '@/types';
 
 Highcharts.setOptions({
@@ -35,6 +36,9 @@ const AXIS_STYLE = {
 };
 
 const Stock: React.FC<{ data: number[][]; orders: Order[] }> = ({ data, orders }) => {
+  const { hidden } = useFormat();
+  // O preço é de mercado, mas os pontos revelariam o preço pago em cada boleta.
+  const visibleOrders = hidden ? [] : orders;
   const options: Highcharts.Options = {
     chart: { backgroundColor: 'transparent', style: { fontFamily: 'inherit' } },
     credits: { enabled: false },
@@ -67,11 +71,11 @@ const Stock: React.FC<{ data: number[][]; orders: Order[] }> = ({ data, orders }
     series: [
       { type: 'line', name: 'Preço', data, color: '#3987e5', lineWidth: 2 },
       {
-        type: 'scatter', name: 'Compra', data: orderPoints(orders, 1), color: '#0ca30c',
+        type: 'scatter', name: 'Compra', data: orderPoints(visibleOrders, 1), color: '#0ca30c',
         marker: { enabled: true, symbol: 'triangle', radius: 6 }, tooltip: { pointFormat: 'Compra: <b>R$ {point.y:.2f}</b>' },
       },
       {
-        type: 'scatter', name: 'Venda', data: orderPoints(orders, -1), color: '#d03b3b',
+        type: 'scatter', name: 'Venda', data: orderPoints(visibleOrders, -1), color: '#d03b3b',
         marker: { enabled: true, symbol: 'triangle-down', radius: 6 }, tooltip: { pointFormat: 'Venda: <b>R$ {point.y:.2f}</b>' },
       },
     ],

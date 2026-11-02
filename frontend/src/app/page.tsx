@@ -13,7 +13,8 @@ import {
   AllocationFilter, AllocationGroup, Dimension, applyFilters, availableDimensions, nextDimension,
 } from '@/lib/allocation';
 import { investidor10Url } from '@/lib/assets';
-import { formatCurrency, formatSignedCurrency, formatSignedPercent } from '@/lib/format';
+import { formatSignedPercent } from '@/lib/format';
+import { useFormat } from '@/lib/privacy';
 import { useApi } from '@/lib/useApi';
 import { Position, PositionHistory, PositionResponse } from '@/types';
 
@@ -26,6 +27,7 @@ const Stat: React.FC<{ label: string; children: React.ReactNode; detail?: React.
 );
 
 export default function Home() {
+  const { formatCurrency, formatSignedCurrency } = useFormat();
   const { data, isLoading, error, reload } = useApi<PositionResponse>('/position');
   const [filters, setFilters] = useState<AllocationFilter[]>([]);
   const [dimension, setDimension] = useState<Dimension>('asset_class');

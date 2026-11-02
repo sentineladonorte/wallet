@@ -8,12 +8,14 @@ import OrderModal, { OrderFormData } from '@/components/modals/order';
 import { ConfirmDialog, EstimatedBadge, IconButton } from '@/components/ui';
 import { useToast } from '@/components/ui/toast';
 import { classLabel } from '@/lib/assets';
-import { formatCurrency, formatDate, formatQuantity } from '@/lib/format';
+import { formatDate } from '@/lib/format';
+import { useFormat } from '@/lib/privacy';
 import { errorMessage } from '@/lib/useApi';
 import api from '@/services/api';
 import { Order } from '@/types';
 
 const OrdersTable: React.FC<{ orders: Order[]; onChanged: () => void }> = ({ orders, onChanged }) => {
+  const { formatCurrency, formatQuantity } = useFormat();
   const toast = useToast();
   const [editing, setEditing] = useState<Order | null>(null);
   const [deleting, setDeleting] = useState<Order | null>(null);

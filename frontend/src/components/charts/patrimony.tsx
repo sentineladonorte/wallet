@@ -5,7 +5,7 @@ import {
   CategoryScale, Chart as ChartJS, Legend, LinearScale, LineElement, PointElement, Tooltip,
 } from 'chart.js';
 import { Line } from 'react-chartjs-2';
-import { formatCompact, formatCurrency } from '@/lib/format';
+import { useFormat } from '@/lib/privacy';
 import { PositionHistory } from '@/types';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend);
@@ -33,6 +33,7 @@ const firstIndexInRange = (labels: string[], months: number | null) => {
 };
 
 export const Patrimony: React.FC<{ data: PositionHistory }> = ({ data }) => {
+  const { formatCompact, formatCurrency } = useFormat();
   const [months, setMonths] = useState<number | null>(null);
   const start = firstIndexInRange(data.labels, months);
   const labels = data.labels.slice(start);

@@ -8,7 +8,8 @@ import {
   AllocationFilter, AllocationGroup, Dimension, availableDimensions, dimensionLabel, groupAssets,
 } from '@/lib/allocation';
 import { investidor10Url, OTHER_COLOR } from '@/lib/assets';
-import { formatCurrency, formatPercent } from '@/lib/format';
+import { formatPercent } from '@/lib/format';
+import { useFormat } from '@/lib/privacy';
 import { Position } from '@/types';
 
 const AllocationExplorer: React.FC<{
@@ -19,6 +20,7 @@ const AllocationExplorer: React.FC<{
   onSelect: (group: AllocationGroup) => void;
   onBreadcrumb: (depth: number) => void;
 }> = ({ assets, filters, dimension, onDimensionChange, onSelect, onBreadcrumb }) => {
+  const { formatCurrency } = useFormat();
   const groups = groupAssets(assets, dimension);
   const total = groups.reduce((sum, group) => sum + group.value, 0);
   const isAssetLevel = dimension === 'name';

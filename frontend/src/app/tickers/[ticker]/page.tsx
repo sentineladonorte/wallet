@@ -7,7 +7,8 @@ import AssetLink from '@/components/assetLink';
 import OrdersTable from '@/components/ordersTable';
 import { Card, CardTitle, EmptyState, EstimatedBadge, LoadingState, PageHeader, ProfitText } from '@/components/ui';
 import { classLabel } from '@/lib/assets';
-import { formatCurrency, formatDate, formatQuantity, formatSignedPercent } from '@/lib/format';
+import { formatDate, formatSignedPercent } from '@/lib/format';
+import { useFormat } from '@/lib/privacy';
 import { useApi } from '@/lib/useApi';
 import { Order, PositionHistory, PositionResponse } from '@/types';
 
@@ -22,6 +23,7 @@ const Detail: React.FC<{ label: string; children: React.ReactNode }> = ({ label,
 );
 
 const TickerPage: React.FC<{ params: { ticker: string } }> = ({ params }) => {
+  const { formatCurrency, formatQuantity } = useFormat();
   const ticker = decodeURIComponent(params.ticker).toUpperCase();
   const position = useApi<PositionResponse>('/position');
   const history = useApi<PositionHistory>('/position-history', { ticker });
