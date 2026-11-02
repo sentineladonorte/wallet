@@ -2,17 +2,34 @@ import io
 import importlib
 from datetime import date, timedelta
 from decimal import Decimal
+from unittest import mock
 
 from django.apps import apps
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 from openpyxl import Workbook
 
 from app.models import Asset, AssetPrice
+from app.market_data import MarketDataError
+from app.models import MarketDataUpdate
 from wallet.b3_import import ImportFileError, apply_plan, build_plan, parse_position_file
-from wallet.models import AllocationTarget, AssetConsolidatedValue, Order
+from wallet.consolidation import MAX_BACKFILL_DAYS, consolidate_all_users, rebuild_history
+from wallet.market_update import run_update, update_status
+from wallet.models import AllocationTarget, AssetConsolidatedValue, Movement, Order, PositionSnapshot
+from wallet.movements import (
+    MovementFileError,
+    asset_key,
+    build_ledger,
+    import_movements,
+    infer_asset_type,
+    is_movement_file,
+    parse_movements_file,
+    rebuild_orders,
+)
+from wallet.positions import realized_gain, summarize_orders
 
 NU = "NU INVESTIMENTOS S.A. - CTVM"
 SNAPSHOT = date(2026, 11, 2)
@@ -20,45 +37,132 @@ PREVIEW_URL = "/api/orders/import/preview"
 CONFIRM_URL = "/api/orders/import/confirm"
 
 STOCK_HEADER = [
-    "Produto", "Instituição", "Conta", "Código de Negociação", "CNPJ da Empresa", "Código ISIN / Distribuição",
-    "Tipo", "Escriturador", "Quantidade", "Quantidade Disponível", "Quantidade Indisponível", "Motivo",
-    "Preço de Fechamento", "Valor Atualizado",
+    "Produto",
+    "Instituição",
+    "Conta",
+    "Código de Negociação",
+    "CNPJ da Empresa",
+    "Código ISIN / Distribuição",
+    "Tipo",
+    "Escriturador",
+    "Quantidade",
+    "Quantidade Disponível",
+    "Quantidade Indisponível",
+    "Motivo",
+    "Preço de Fechamento",
+    "Valor Atualizado",
 ]
 BDR_HEADER = [
-    "Produto", "Instituição", "Conta", "Código de Negociação", "Código ISIN / Distribuição", "Tipo", "Escriturador",
-    "Quantidade", "Quantidade Disponível", "Quantidade Indisponível", "Motivo", "Preço de Fechamento",
+    "Produto",
+    "Instituição",
+    "Conta",
+    "Código de Negociação",
+    "Código ISIN / Distribuição",
+    "Tipo",
+    "Escriturador",
+    "Quantidade",
+    "Quantidade Disponível",
+    "Quantidade Indisponível",
+    "Motivo",
+    "Preço de Fechamento",
     "Valor Atualizado",
 ]
 RF_HEADER = [
-    "Produto", "Instituição", "Emissor", "Código", "Indexador", "Tipo de regime", "Data de Emissão", "Vencimento",
-    "Quantidade", "Quantidade Disponível", "Quantidade Indisponível", "Motivo", "Contraparte",
-    "Preço Atualizado MTM", "Valor Atualizado MTM", "Preço Atualizado CURVA", "Valor Atualizado CURVA",
-    "Preço Atualizado FECHAMENTO", "Valor Atualizado FECHAMENTO",
+    "Produto",
+    "Instituição",
+    "Emissor",
+    "Código",
+    "Indexador",
+    "Tipo de regime",
+    "Data de Emissão",
+    "Vencimento",
+    "Quantidade",
+    "Quantidade Disponível",
+    "Quantidade Indisponível",
+    "Motivo",
+    "Contraparte",
+    "Preço Atualizado MTM",
+    "Valor Atualizado MTM",
+    "Preço Atualizado CURVA",
+    "Valor Atualizado CURVA",
+    "Preço Atualizado FECHAMENTO",
+    "Valor Atualizado FECHAMENTO",
 ]
 TD_HEADER = [
-    "Produto", "Instituição", "Código ISIN", "Indexador", "Vencimento", "Quantidade", "Quantidade Disponível",
-    "Quantidade Indisponível", "Motivo", "Valor Aplicado", "Valor bruto", "Valor líquido", "Valor Atualizado",
+    "Produto",
+    "Instituição",
+    "Código ISIN",
+    "Indexador",
+    "Vencimento",
+    "Quantidade",
+    "Quantidade Disponível",
+    "Quantidade Indisponível",
+    "Motivo",
+    "Valor Aplicado",
+    "Valor bruto",
+    "Valor líquido",
+    "Valor Atualizado",
 ]
 
 
 def stock(code="TEST3", quantity=10, close=5.5, institution=NU):
     return [
-        f"{code} - EMPRESA TESTE S.A.", institution, "1", code, "00000000000191", "BRTESTACNOR0 - 1", "ON", "BANCO",
-        quantity, quantity, "-", "-", close, round(quantity * close, 2),
+        f"{code} - EMPRESA TESTE S.A.",
+        institution,
+        "1",
+        code,
+        "00000000000191",
+        "BRTESTACNOR0 - 1",
+        "ON",
+        "BANCO",
+        quantity,
+        quantity,
+        "-",
+        "-",
+        close,
+        round(quantity * close, 2),
     ]
 
 
 def bdr(code="TEST34", quantity=2, close=10.0):
     return [
-        f"{code} - EMPRESA INC", NU, "1", code, "BRTESTBDR000 - 1", "BDR", "BANCO",
-        quantity, quantity, "-", "-", close, round(quantity * close, 2),
+        f"{code} - EMPRESA INC",
+        NU,
+        "1",
+        code,
+        "BRTESTBDR000 - 1",
+        "BDR",
+        "BANCO",
+        quantity,
+        quantity,
+        "-",
+        "-",
+        close,
+        round(quantity * close, 2),
     ]
 
 
 def fixed_income(code="CDBTEST1", index="PREFIXADO", quantity=1000, price=1.05, product="CDB - BANCO TESTE S/A"):
     return [
-        product, NU, "BANCO TESTE S/A", code, index, "DEPOSITADO", "10/02/2026", "10/02/2099", quantity, quantity,
-        "-", "-", "-", "-", "-", price, round(quantity * price, 2), "-", "-",
+        product,
+        NU,
+        "BANCO TESTE S/A",
+        code,
+        index,
+        "DEPOSITADO",
+        "10/02/2026",
+        "10/02/2099",
+        quantity,
+        quantity,
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        price,
+        round(quantity * price, 2),
+        "-",
+        "-",
     ]
 
 
@@ -142,14 +246,16 @@ class ParserTests(TestCase):
         self.assertEqual(position.fixed_income_type, "TD")
 
     def test_unknown_index_and_type_become_row_errors(self):
-        parsed = parse({
-            "Renda Fixa": [
-                RF_HEADER,
-                fixed_income("CDBCDI", index="CDI"),
-                fixed_income("CRI1", product="CRI - SECURITIZADORA"),
-                fixed_income("CDBOK"),
-            ]
-        })
+        parsed = parse(
+            {
+                "Renda Fixa": [
+                    RF_HEADER,
+                    fixed_income("CDBCDI", index="CDI"),
+                    fixed_income("CRI1", product="CRI - SECURITIZADORA"),
+                    fixed_income("CDBOK"),
+                ]
+            }
+        )
 
         self.assertEqual([p.name for p in parsed.positions], ["CDBOK"])
         self.assertEqual({e.name for e in parsed.errors}, {"CDBCDI", "CRI1"})
@@ -197,15 +303,17 @@ class ReconciliationTests(TestCase):
         return plan
 
     def test_estimated_cost_rules(self):
-        self.run_import({
-            "Acoes": [STOCK_HEADER, stock()],
-            "Renda Fixa": [
-                RF_HEADER,
-                fixed_income("CDBPU1", quantity=1000, price=1.05),
-                fixed_income("CDBPU1000", quantity=2, price=1814.87),
-            ],
-            "Tesouro Direto": [TD_HEADER, treasury()],
-        })
+        self.run_import(
+            {
+                "Acoes": [STOCK_HEADER, stock()],
+                "Renda Fixa": [
+                    RF_HEADER,
+                    fixed_income("CDBPU1", quantity=1000, price=1.05),
+                    fixed_income("CDBPU1000", quantity=2, price=1814.87),
+                ],
+                "Tesouro Direto": [TD_HEADER, treasury()],
+            }
+        )
 
         orders = {order.name: order for order in Order.objects.filter(user=self.user)}
         self.assertTrue(all(order.cost_estimated for order in orders.values()))
@@ -228,11 +336,13 @@ class ReconciliationTests(TestCase):
     def test_fixed_income_keeps_issuer_and_etf_gets_category(self):
         etf = bdr("BOVA11")
         etf[5] = "Ações"
-        self.run_import({
-            "ETF": [BDR_HEADER, etf],
-            "Renda Fixa": [RF_HEADER, fixed_income()],
-            "Tesouro Direto": [TD_HEADER, treasury()],
-        })
+        self.run_import(
+            {
+                "ETF": [BDR_HEADER, etf],
+                "Renda Fixa": [RF_HEADER, fixed_income()],
+                "Tesouro Direto": [TD_HEADER, treasury()],
+            }
+        )
 
         self.assertEqual(Asset.objects.get(ticker="BOVA11").category, "Ações")
         self.assertEqual(Order.objects.get(name="CDBTEST1").issuer, "BANCO TESTE S/A")
@@ -328,8 +438,14 @@ class ReconciliationTests(TestCase):
 
     def test_adjustment_keeps_asset_type_of_existing_orders(self):
         Order.objects.create(
-            user=self.user, name="TEST34", broker="Nu Invest", asset_type="INT", order_type=1,
-            date=date(2023, 1, 1), price=Decimal(8), volume=Decimal(1),
+            user=self.user,
+            name="TEST34",
+            broker="Nu Invest",
+            asset_type="INT",
+            order_type=1,
+            date=date(2023, 1, 1),
+            price=Decimal(8),
+            volume=Decimal(1),
         )
 
         self.run_import({"BDR": [BDR_HEADER, bdr(quantity=2)]})
@@ -380,9 +496,18 @@ class ReconciliationTests(TestCase):
 
     def test_manual_fixed_income_is_flagged_as_possible_duplicate(self):
         Order.objects.create(
-            user=self.user, name="CDB TESTE 2099-02-10", broker="Nu Invest", asset_type="RF", order_type=1,
-            date=date(2026, 1, 1), price=Decimal(1000), volume=Decimal(1), maturity_date=date(2099, 2, 10),
-            interest_rate=Decimal(10), index="P", fixed_income_type="CDB",
+            user=self.user,
+            name="CDB TESTE 2099-02-10",
+            broker="Nu Invest",
+            asset_type="RF",
+            order_type=1,
+            date=date(2026, 1, 1),
+            price=Decimal(1000),
+            volume=Decimal(1),
+            maturity_date=date(2099, 2, 10),
+            interest_rate=Decimal(10),
+            index="P",
+            fixed_income_type="CDB",
         )
 
         plan = build_plan(self.user, parse({"Renda Fixa": [RF_HEADER, fixed_income()]}), SNAPSHOT)
@@ -391,9 +516,17 @@ class ReconciliationTests(TestCase):
 
     def test_matured_fixed_income_is_not_listed_as_missing(self):
         Order.objects.create(
-            user=self.user, name="CDB VENCIDO", broker="Nu Invest", asset_type="RF", order_type=1,
-            date=date(2020, 1, 1), price=Decimal(1000), volume=Decimal(1), maturity_date=date(2021, 1, 1),
-            index="P", fixed_income_type="CDB",
+            user=self.user,
+            name="CDB VENCIDO",
+            broker="Nu Invest",
+            asset_type="RF",
+            order_type=1,
+            date=date(2020, 1, 1),
+            price=Decimal(1000),
+            volume=Decimal(1),
+            maturity_date=date(2021, 1, 1),
+            index="P",
+            fixed_income_type="CDB",
         )
 
         plan = build_plan(self.user, parse({"Acoes": [STOCK_HEADER, stock()]}), SNAPSHOT)
@@ -404,7 +537,8 @@ class ReconciliationTests(TestCase):
         self.run_import({"Renda Fixa": [RF_HEADER, fixed_income("CDBX")]})
 
         plan = build_plan(
-            self.user, parse({"Renda Fixa": [RF_HEADER, fixed_income("CDBX", index="CDI"), fixed_income("CDBY")]}),
+            self.user,
+            parse({"Renda Fixa": [RF_HEADER, fixed_income("CDBX", index="CDI"), fixed_income("CDBY")]}),
             SNAPSHOT,
         )
 
@@ -426,16 +560,27 @@ class PositionViewTests(TestCase):
 
     def create_order(self, user=None, **overrides):
         fields = {
-            "user": user or self.user, "name": "TEST3", "broker": "Nu Invest", "asset_type": "AC", "order_type": 1,
-            "date": date(2026, 1, 1), "price": Decimal(10), "volume": Decimal(10),
+            "user": user or self.user,
+            "name": "TEST3",
+            "broker": "Nu Invest",
+            "asset_type": "AC",
+            "order_type": 1,
+            "date": date(2026, 1, 1),
+            "price": Decimal(10),
+            "volume": Decimal(10),
         }
         fields.update(overrides)
         return Order.objects.create(**fields)
 
     def fixed_income_order(self, **overrides):
         fields = {
-            "name": "CDB1", "asset_type": "RF", "price": Decimal(1), "volume": Decimal(1000),
-            "maturity_date": date.today() + timedelta(days=365), "index": "P", "fixed_income_type": "CDB",
+            "name": "CDB1",
+            "asset_type": "RF",
+            "price": Decimal(1),
+            "volume": Decimal(1000),
+            "maturity_date": date.today() + timedelta(days=365),
+            "index": "P",
+            "fixed_income_type": "CDB",
         }
         fields.update(overrides)
         return self.create_order(**fields)
@@ -448,8 +593,13 @@ class PositionViewTests(TestCase):
     def test_fractional_quantity_keeps_value(self):
         self.fixed_income_order(name="TD", price=Decimal("3131.93"), volume=Decimal("0.69"), fixed_income_type="TD")
         AssetConsolidatedValue.objects.create(
-            user=self.user, name="TD", asset_type="RF", date=SNAPSHOT, value=Decimal("2722.74"),
-            volume=Decimal("0.69"), invested=Decimal("2161.03"),
+            user=self.user,
+            name="TD",
+            asset_type="RF",
+            date=SNAPSHOT,
+            value=Decimal("2722.74"),
+            volume=Decimal("0.69"),
+            invested=Decimal("2161.03"),
         )
 
         row = self.position()["assets"][0]
@@ -485,8 +635,13 @@ class PositionViewTests(TestCase):
         self.create_order(name="SEMPRECO3")
         self.fixed_income_order()
         AssetConsolidatedValue.objects.create(
-            user=self.user, name="CDB1", asset_type="RF", date=SNAPSHOT, value=Decimal(1050),
-            volume=Decimal(1000), invested=Decimal(1000),
+            user=self.user,
+            name="CDB1",
+            asset_type="RF",
+            date=SNAPSHOT,
+            value=Decimal(1050),
+            volume=Decimal(1000),
+            invested=Decimal(1000),
         )
 
         summary = self.position()["summary"]
@@ -509,16 +664,31 @@ class PositionViewTests(TestCase):
         other = User.objects.create_user("outro", password="senha")
         self.fixed_income_order()
         AssetConsolidatedValue.objects.create(
-            user=self.user, name="CDB1", asset_type="RF", date=SNAPSHOT, value=Decimal(1100),
-            volume=Decimal(1000), invested=Decimal(1000),
+            user=self.user,
+            name="CDB1",
+            asset_type="RF",
+            date=SNAPSHOT,
+            value=Decimal(1100),
+            volume=Decimal(1000),
+            invested=Decimal(1000),
         )
         AssetConsolidatedValue.objects.create(
-            user=self.user, name="CDB1", asset_type="RF", date=SNAPSHOT - timedelta(days=1), value=Decimal(1000),
-            volume=Decimal(1000), invested=Decimal(1000),
+            user=self.user,
+            name="CDB1",
+            asset_type="RF",
+            date=SNAPSHOT - timedelta(days=1),
+            value=Decimal(1000),
+            volume=Decimal(1000),
+            invested=Decimal(1000),
         )
         AssetConsolidatedValue.objects.create(
-            user=other, name="CDB1", asset_type="RF", date=SNAPSHOT + timedelta(days=1), value=Decimal(9999),
-            volume=Decimal(1000), invested=Decimal(1000),
+            user=other,
+            name="CDB1",
+            asset_type="RF",
+            date=SNAPSHOT + timedelta(days=1),
+            value=Decimal(9999),
+            volume=Decimal(1000),
+            invested=Decimal(1000),
         )
 
         self.assertAlmostEqual(self.position()["assets"][0]["value"], 1100, places=2)
@@ -560,9 +730,7 @@ class PositionViewTests(TestCase):
         rows = self.position()["assets"]
 
         self.assertEqual([row["name"] for row in rows], ["BIG3", "TEST3"])
-        self.assertEqual(
-            rows[1]["brokers"], [{"broker": "Nu Invest", "volume": 10.0}, {"broker": "XP", "volume": 5.0}]
-        )
+        self.assertEqual(rows[1]["brokers"], [{"broker": "Nu Invest", "volume": 10.0}, {"broker": "XP", "volume": 5.0}])
 
     def test_issuer_ignores_orders_without_it(self):
         self.fixed_income_order(date=date(2026, 1, 1))
@@ -585,8 +753,13 @@ class PositionViewTests(TestCase):
 
     def test_position_history_finds_name_with_hyphen(self):
         AssetConsolidatedValue.objects.create(
-            user=self.user, name="CDB X 2030-01-01", asset_type="RF", date=SNAPSHOT, value=Decimal(10),
-            volume=Decimal(1), invested=Decimal(10),
+            user=self.user,
+            name="CDB X 2030-01-01",
+            asset_type="RF",
+            date=SNAPSHOT,
+            value=Decimal(10),
+            volume=Decimal(1),
+            invested=Decimal(10),
         )
 
         response = self.client.get("/api/position-history", {"ticker": "cdb x 2030-01-01"})
@@ -599,14 +772,27 @@ class OrdersViewTests(TestCase):
         self.user = User.objects.create_user("investidor", password="senha")
         self.client.force_login(self.user)
         self.order = Order.objects.create(
-            user=self.user, name="TEST3", broker="Nu Invest", asset_type="AC", order_type=1, date=SNAPSHOT,
-            price=Decimal("3131.93"), volume=Decimal("0.69"), cost_estimated=True,
+            user=self.user,
+            name="TEST3",
+            broker="Nu Invest",
+            asset_type="AC",
+            order_type=1,
+            date=SNAPSHOT,
+            price=Decimal("3131.93"),
+            volume=Decimal("0.69"),
+            cost_estimated=True,
         )
 
     def test_returns_named_fields_newest_first(self):
         older = Order.objects.create(
-            user=self.user, name="OLD3", broker="XP", asset_type="AC", order_type=-1, date=date(2020, 1, 1),
-            price=Decimal(1), volume=Decimal(1),
+            user=self.user,
+            name="OLD3",
+            broker="XP",
+            asset_type="AC",
+            order_type=-1,
+            date=date(2020, 1, 1),
+            price=Decimal(1),
+            volume=Decimal(1),
         )
 
         rows = self.client.get("/api/orders/").json()
@@ -623,8 +809,14 @@ class OrdersViewTests(TestCase):
     def test_get_order_is_scoped_to_user(self):
         other = User.objects.create_user("outro", password="senha")
         foreign = Order.objects.create(
-            user=other, name="X", broker="XP", asset_type="AC", order_type=1, date=SNAPSHOT,
-            price=Decimal(1), volume=Decimal(1),
+            user=other,
+            name="X",
+            broker="XP",
+            asset_type="AC",
+            order_type=1,
+            date=SNAPSHOT,
+            price=Decimal(1),
+            volume=Decimal(1),
         )
 
         self.assertEqual(self.client.get(f"/api/order/{self.order.id}").json()["name"], "TEST3")
@@ -659,8 +851,16 @@ class BackfillIssuerMigrationTests(TestCase):
 
     def create_order(self, name, description, fixed_income_type="CDB", issuer=None):
         return Order.objects.create(
-            user=self.user, name=name, broker="Nu Invest", asset_type="RF", order_type=1, date=SNAPSHOT,
-            price=Decimal(1), volume=Decimal(1), description=description, fixed_income_type=fixed_income_type,
+            user=self.user,
+            name=name,
+            broker="Nu Invest",
+            asset_type="RF",
+            order_type=1,
+            date=SNAPSHOT,
+            price=Decimal(1),
+            volume=Decimal(1),
+            description=description,
+            fixed_income_type=fixed_income_type,
             issuer=issuer,
         )
 
@@ -702,12 +902,23 @@ class ResetPortfolioTests(TestCase):
         self.other = User.objects.create_user("outro", password="senha")
         for user in (self.user, self.other):
             Order.objects.create(
-                user=user, name="TEST3", broker="XP", asset_type="AC", order_type=1, date=SNAPSHOT,
-                price=Decimal(1), volume=Decimal(1),
+                user=user,
+                name="TEST3",
+                broker="XP",
+                asset_type="AC",
+                order_type=1,
+                date=SNAPSHOT,
+                price=Decimal(1),
+                volume=Decimal(1),
             )
             AssetConsolidatedValue.objects.create(
-                user=user, name="TEST3", asset_type="AC", date=SNAPSHOT, value=Decimal(1),
-                volume=Decimal(1), invested=Decimal(1),
+                user=user,
+                name="TEST3",
+                asset_type="AC",
+                date=SNAPSHOT,
+                value=Decimal(1),
+                volume=Decimal(1),
+                invested=Decimal(1),
             )
 
     def test_without_yes_only_reports(self):
@@ -730,9 +941,7 @@ class AssetClassificationTests(TestCase):
         Asset.objects.create(ticker="TEST3", category="Antiga", sub_category="Velha")
 
     def patch(self, ticker="test3", **data):
-        return self.client.patch(
-            f"/api/asset/{ticker}/classification", data=data, content_type="application/json"
-        )
+        return self.client.patch(f"/api/asset/{ticker}/classification", data=data, content_type="application/json")
 
     def test_requires_authentication(self):
         self.assertEqual(self.patch(category="Nova").status_code, 401)
@@ -846,10 +1055,12 @@ class AllocationTargetsTests(TestCase):
         self.client.force_login(self.user)
 
     def put(self, asset_class=None, **targets):
-        return self.put_raw({
-            "asset_class": asset_class,
-            "targets": [{"key": key, "percent": percent} for key, percent in targets.items()],
-        })
+        return self.put_raw(
+            {
+                "asset_class": asset_class,
+                "targets": [{"key": key, "percent": percent} for key, percent in targets.items()],
+            }
+        )
 
     def put_raw(self, data):
         return self.client.put(self.URL, data=data, content_type="application/json")
@@ -868,10 +1079,13 @@ class AllocationTargetsTests(TestCase):
         response = self.put("AC", Bancos=20, Saneamento=20.5)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {
-            "classes": {"AC": 25.0, "FII": 25.0, "RF": 50.0},
-            "categories": {"AC": {"Bancos": 20.0, "Saneamento": 20.5}},
-        })
+        self.assertEqual(
+            response.json(),
+            {
+                "classes": {"AC": 25.0, "FII": 25.0, "RF": 50.0},
+                "categories": {"AC": {"Bancos": 20.0, "Saneamento": 20.5}},
+            },
+        )
 
     def test_saving_a_level_replaces_only_that_level(self):
         self.put(AC=25, FII=25)
@@ -937,3 +1151,1060 @@ class AllocationTargetsTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(self.client.post(self.URL).status_code, 400)
+
+
+class ConsolidationTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("investidor", password="senha")
+
+    def order(self, name="TEST3", asset_type="AC", user=None, **overrides):
+        fields = {
+            "user": user or self.user,
+            "name": name,
+            "broker": "XP",
+            "asset_type": asset_type,
+            "order_type": 1,
+            "date": date(2026, 10, 1),
+            "price": Decimal(10),
+            "volume": Decimal(10),
+        }
+        fields.update(overrides)
+        return Order.objects.create(**fields)
+
+    def price(self, day, close=20.0, ticker="TEST3"):
+        return AssetPrice.objects.create(ticker=ticker, date=day, close=close)
+
+    def snapshot(self, name="TEST3", day=date(2026, 10, 1), value=100, volume=10, asset_type="AC"):
+        return AssetConsolidatedValue.objects.create(
+            user=self.user,
+            name=name,
+            asset_type=asset_type,
+            date=day,
+            value=Decimal(value),
+            volume=Decimal(volume),
+            invested=Decimal(value),
+        )
+
+    def row(self, day, name="TEST3", user=None):
+        return AssetConsolidatedValue.objects.get(user=user or self.user, name=name, date=day)
+
+    def test_values_market_asset_by_close_of_the_day(self):
+        self.order()
+        self.snapshot()
+        self.price(date(2026, 10, 2), 20.0)
+        self.price(date(2026, 10, 5), 25.0)
+
+        self.assertEqual(consolidate_all_users(), 2)
+
+        self.assertEqual(self.row(date(2026, 10, 2)).value, Decimal(200))
+        self.assertEqual(self.row(date(2026, 10, 5)).value, Decimal(250))
+        self.assertEqual(self.row(date(2026, 10, 5)).invested, Decimal(100))
+
+    def test_does_not_overwrite_rows_before_the_last_one(self):
+        self.order()
+        self.snapshot(day=date(2026, 10, 2), value=999)
+        self.price(date(2026, 10, 2), 20.0)
+        self.price(date(2026, 10, 5), 25.0)
+
+        consolidate_all_users()
+
+        self.assertEqual(self.row(date(2026, 10, 2)).value, Decimal(999))
+
+    def test_is_idempotent(self):
+        self.order()
+        self.snapshot()
+        self.price(date(2026, 10, 2))
+
+        consolidate_all_users()
+
+        self.assertEqual(consolidate_all_users(), 0)
+
+    def test_asset_without_trade_keeps_previous_close(self):
+        self.order()
+        self.order(name="OTHER3")
+        self.snapshot()
+        self.snapshot(name="OTHER3")
+        self.price(date(2026, 10, 1), 30.0)
+        self.price(date(2026, 10, 2), 40.0, ticker="OTHER3")
+
+        consolidate_all_users()
+
+        self.assertEqual(self.row(date(2026, 10, 2)).value, Decimal(300))
+
+    def test_sale_reduces_position_from_its_date(self):
+        self.order()
+        self.order(order_type=-1, volume=Decimal(4), date=date(2026, 10, 5))
+        self.snapshot()
+        self.price(date(2026, 10, 2))
+        self.price(date(2026, 10, 5))
+
+        consolidate_all_users()
+
+        self.assertEqual(self.row(date(2026, 10, 2)).volume, Decimal(10))
+        self.assertEqual(self.row(date(2026, 10, 5)).volume, Decimal(6))
+        self.assertEqual(self.row(date(2026, 10, 5)).value, Decimal(120))
+
+    def test_position_opened_later_starts_on_its_date(self):
+        self.order(date=date(2026, 10, 5))
+        self.price(date(2026, 10, 2))
+        self.price(date(2026, 10, 5))
+
+        consolidate_all_users()
+
+        self.assertEqual(AssetConsolidatedValue.objects.count(), 1)
+        self.assertEqual(self.row(date(2026, 10, 5)).value, Decimal(200))
+
+    def test_fixed_income_without_rate_keeps_last_known_value(self):
+        self.order(name="CDB1", asset_type="RF", maturity_date=date(2030, 1, 1))
+        self.snapshot(name="CDB1", value=1234, asset_type="RF")
+        self.price(date(2026, 10, 2))
+
+        consolidate_all_users()
+
+        self.assertEqual(self.row(date(2026, 10, 2), "CDB1").value, Decimal(1234))
+
+    def test_fixed_income_with_rate_grows_by_elapsed_days(self):
+        self.order(name="CDB1", asset_type="RF", maturity_date=date(2030, 1, 1), interest_rate=Decimal(10))
+        self.snapshot(name="CDB1", value=1000, asset_type="RF")
+        self.price(date(2026, 10, 1) + timedelta(days=30))
+
+        consolidate_all_users()
+
+        expected = Decimal(str(1000 * 1.1 ** (30 / 365))).quantize(Decimal("0.01"))
+        self.assertEqual(self.row(date(2026, 10, 31), "CDB1").value, expected)
+
+    def test_matured_fixed_income_stops(self):
+        self.order(name="CDB1", asset_type="RF", maturity_date=date(2026, 10, 3))
+        self.snapshot(name="CDB1", value=1000, asset_type="RF")
+        self.price(date(2026, 10, 2))
+        self.price(date(2026, 10, 5))
+
+        consolidate_all_users()
+
+        self.assertEqual(self.row(date(2026, 10, 2), "CDB1").value, Decimal(1000))
+        self.assertFalse(AssetConsolidatedValue.objects.filter(name="CDB1", date=date(2026, 10, 5)).exists())
+
+    def test_handles_each_user_separately(self):
+        other = User.objects.create_user("outro", password="senha")
+        self.order()
+        self.order(user=other, volume=Decimal(1))
+        self.price(date(2026, 10, 2))
+
+        consolidate_all_users()
+
+        self.assertEqual(self.row(date(2026, 10, 2)).value, Decimal(200))
+        self.assertEqual(self.row(date(2026, 10, 2), user=other).value, Decimal(20))
+
+    def test_old_gap_is_limited(self):
+        self.order(date=date(2020, 1, 1))
+        self.snapshot(day=date(2020, 1, 1))
+        self.price(date(2026, 1, 1))
+        self.price(date(2026, 10, 30))
+
+        consolidate_all_users()
+
+        first = AssetConsolidatedValue.objects.exclude(date=date(2020, 1, 1)).order_by("date").first()
+        self.assertEqual(first.date, date(2026, 10, 30))
+        self.assertLessEqual((date(2026, 10, 30) - first.date).days, MAX_BACKFILL_DAYS)
+
+    def test_no_prices_means_no_history(self):
+        self.order()
+
+        self.assertEqual(consolidate_all_users(), 0)
+
+    def test_old_commands_work_with_many_users(self):
+        other = User.objects.create_user("outro", password="senha")
+        self.order(date=date(2026, 10, 1))
+        self.order(user=other, date=date(2026, 10, 1))
+        self.order(
+            name="CDB1",
+            asset_type="RF",
+            maturity_date=date(2030, 1, 1),
+            interest_rate=Decimal(10),
+            date=date(2026, 10, 25),
+        )
+        self.price(date(2026, 9, 30))
+
+        call_command("consolidate")
+        call_command("consolidate_fixed_income")
+
+        self.assertTrue(AssetConsolidatedValue.objects.filter(user=other, name="TEST3").exists())
+        self.assertTrue(AssetConsolidatedValue.objects.filter(user=self.user, name="CDB1").exists())
+
+
+@mock.patch("wallet.market_update.fill_missing_categories", return_value=(0, [], False))
+@mock.patch("wallet.market_update.fetch_session")
+class MarketUpdateTests(TestCase):
+    def test_downloads_only_sessions_after_the_last_one(self, fetch, categories):
+        MarketDataUpdate.objects.create(status="success", last_session=date.today() - timedelta(days=1))
+        fetch.return_value = None
+
+        run_update()
+
+        self.assertLessEqual(fetch.call_count, 2)
+        for call in fetch.call_args_list:
+            self.assertGreaterEqual(call[0][0], date.today() - timedelta(days=1))
+
+    def test_records_success_and_last_session(self, fetch, categories):
+        fetch.side_effect = lambda day: (3, day)
+
+        run = run_update()
+
+        self.assertEqual(run.status, "success")
+        self.assertIsNotNone(run.finished_at)
+        self.assertIsNotNone(run.last_session)
+        self.assertGreater(run.prices_saved, 0)
+        self.assertFalse(update_status()["running"])
+
+    def test_missing_files_keep_previous_last_session(self, fetch, categories):
+        MarketDataUpdate.objects.create(status="success", last_session=date(2026, 10, 30))
+        fetch.return_value = None
+
+        run = run_update()
+
+        self.assertEqual(run.status, "success")
+        self.assertEqual(update_status()["last_session"], date(2026, 10, 30))
+
+    def test_download_failure_is_recorded_and_history_still_runs(self, fetch, categories):
+        fetch.side_effect = MarketDataError("B3 fora do ar")
+
+        with mock.patch("wallet.market_update.consolidate_all_users", return_value=7) as consolidate:
+            run = run_update()
+
+        consolidate.assert_called_once()
+        self.assertEqual(run.status, "error")
+        self.assertIn("B3 fora do ar", run.message)
+
+    def test_unresolved_categories_are_reported_without_failing(self, fetch, categories):
+        fetch.return_value = None
+        categories.return_value = (0, ["BOVA11"], False)
+
+        run = run_update()
+
+        self.assertEqual(run.status, "success")
+        self.assertIn("BOVA11", run.message)
+
+    def test_sends_only_market_assets_for_categories(self, fetch, categories):
+        fetch.return_value = None
+        user = User.objects.create_user("investidor", password="senha")
+        for name, asset_type in (("TEST3", "AC"), ("CDB1", "RF")):
+            Order.objects.create(
+                user=user,
+                name=name,
+                broker="XP",
+                asset_type=asset_type,
+                order_type=1,
+                date=SNAPSHOT,
+                price=Decimal(1),
+                volume=Decimal(1),
+            )
+
+        run_update()
+
+        categories.assert_called_once_with({"TEST3": "AC"})
+
+    def test_second_run_is_skipped_while_one_holds_the_lock(self, fetch, categories):
+        with mock.patch("wallet.market_update._try_lock", return_value=False):
+            self.assertIsNone(run_update())
+        self.assertEqual(MarketDataUpdate.objects.count(), 0)
+
+
+class MarketDataEndpointTests(TestCase):
+    URL = "/api/market-data"
+
+    def setUp(self):
+        self.user = User.objects.create_user("investidor", password="senha")
+
+    def test_requires_authentication(self):
+        self.assertEqual(self.client.get(self.URL).status_code, 401)
+        self.assertEqual(self.client.post(self.URL).status_code, 401)
+
+    def test_status_before_any_update(self):
+        self.client.force_login(self.user)
+
+        body = self.client.get(self.URL).json()
+
+        self.assertFalse(body["running"])
+        self.assertIsNone(body["last_session"])
+
+    def test_reports_last_finished_update(self):
+        self.client.force_login(self.user)
+        finished = timezone.now()
+        MarketDataUpdate.objects.create(
+            status="success",
+            last_session=date(2026, 10, 30),
+            finished_at=finished,
+            message="ok",
+        )
+
+        body = self.client.get(self.URL).json()
+
+        self.assertEqual(body["last_session"], "2026-10-30")
+        self.assertEqual(body["status"], "success")
+        self.assertEqual(body["message"], "ok")
+
+    @mock.patch("wallet.views.start_update_in_background")
+    def test_post_starts_update(self, start):
+        self.client.force_login(self.user)
+
+        response = self.client.post(self.URL)
+
+        self.assertEqual(response.status_code, 202)
+        self.assertTrue(response.json()["running"])
+        start.assert_called_once()
+
+    @mock.patch("wallet.views.start_update_in_background")
+    def test_post_does_not_start_second_update(self, start):
+        self.client.force_login(self.user)
+        MarketDataUpdate.objects.create()
+
+        self.assertTrue(self.client.get(self.URL).json()["running"])
+        self.assertEqual(self.client.post(self.URL).status_code, 202)
+        start.assert_not_called()
+
+    def test_abandoned_run_stops_counting_as_running(self):
+        self.client.force_login(self.user)
+        stale = MarketDataUpdate.objects.create()
+        MarketDataUpdate.objects.filter(pk=stale.pk).update(started_at=timezone.now() - timedelta(hours=2))
+
+        self.assertFalse(self.client.get(self.URL).json()["running"])
+
+
+MOVEMENT_HEADER = [
+    "Entrada/Saída",
+    "Data",
+    "Movimentação",
+    "Produto",
+    "Instituição",
+    "Quantidade",
+    "Preço unitário",
+    "Valor da Operação",
+]
+NU = "NU INVEST CORRETORA DE VALORES S.A."
+XP = "XP INVESTIMENTOS CCTVM S/A"
+
+
+def line(day, kind, product, quantity, price="-", value="-", direction="Credito", institution=NU):
+    return [direction, day, kind, product, institution, quantity, price, value]
+
+
+def buy(day, product, quantity, price, institution=NU):
+    return line(
+        day, "Transferência - Liquidação", product, quantity, price, round(quantity * price, 2), institution=institution
+    )
+
+
+def sell(day, product, quantity, price, institution=NU):
+    return line(
+        day, "Transferência - Liquidação", product, quantity, price, round(quantity * price, 2), "Debito", institution
+    )
+
+
+def movement_file(*rows):
+    return workbook_bytes({"Movimentação": [MOVEMENT_HEADER, *rows]})
+
+
+def snapshot_row(name, quantity, unit_price=10, broker="Nu Invest", day=date(2026, 11, 2), asset_type="AC", **extra):
+    return PositionSnapshot(
+        date=day,
+        name=name,
+        broker=broker,
+        asset_type=asset_type,
+        quantity=Decimal(str(quantity)),
+        unit_price=Decimal(str(unit_price)),
+        value=Decimal(str(quantity)) * Decimal(str(unit_price)),
+        **extra,
+    )
+
+
+def ledger_for(*rows, snapshot=()):
+    movements, errors = parse_movements_file(movement_file(*rows))
+    assert not errors, errors
+    return build_ledger(movements, list(snapshot))
+
+
+def totals(ledger, name):
+    position = _ledger_position(ledger, name)
+    return position.quantity, position.invested
+
+
+def _ledger_position(ledger, name):
+    from types import SimpleNamespace
+
+    from wallet.positions import RunningPosition
+
+    position = RunningPosition()
+    for spec in ledger.orders:
+        if spec.name == name:
+            position.apply(
+                SimpleNamespace(kind=spec.kind, order_type=spec.order_type, volume=spec.volume, price=spec.price)
+            )
+    return position
+
+
+class MovementParsingTests(TestCase):
+    def test_asset_key_forms(self):
+        self.assertEqual(asset_key("PETR4 - PETROBRAS"), "PETR4")
+        self.assertEqual(asset_key("CDB - CDBFICT03"), "CDBFICT03")
+        self.assertEqual(asset_key("CDB - CDBFICT02 - BANCO TESTE S/A"), "CDBFICT02")
+        self.assertEqual(asset_key("LCA - CDBFICT00 - BANCO TESTE S/A"), "CDBFICT00")
+        self.assertEqual(asset_key("Tesouro IPCA+ 2032"), "TESOURO IPCA+ 2032")
+
+    def test_infers_asset_type_from_text(self):
+        self.assertEqual(infer_asset_type("BOVA11", "BOVA11 - ISHARES IBOVESPA FUNDO DE INDICE"), "ETF")
+        self.assertEqual(infer_asset_type("VINO11", "VINO11 - VINCI OFFICES FUNDO DE INVESTIMENTO IMOBILIARIO"), "FII")
+        self.assertEqual(infer_asset_type("FBOK34", "FBOK34 - FACEBOOK"), "BDR")
+        self.assertEqual(infer_asset_type("CARD3", "CARD3 - CSU"), "AC")
+        self.assertEqual(infer_asset_type("X", "CDB - X - BANCO"), "RF")
+
+    def test_detects_file_type(self):
+        self.assertTrue(is_movement_file(movement_file()))
+        self.assertFalse(is_movement_file(workbook_bytes({"Acoes": [STOCK_HEADER]})))
+        self.assertFalse(is_movement_file(io.BytesIO(b"nao e xlsx")))
+
+    def test_identical_rows_are_separate_operations(self):
+        row = buy("06/04/2021", "PETR4 - PETROBRAS", 1, 10.0)
+
+        movements, _ = parse_movements_file(movement_file(row, list(row)))
+
+        self.assertEqual(sorted(m.occurrence for m in movements), [1, 2])
+
+    def test_same_row_with_and_without_issuer_is_b3_duplicate(self):
+        rows = [
+            line("18/02/2026", "COMPRA / VENDA", "CDB - CDBFICT01", 1000, 1, 1000),
+            line("18/02/2026", "COMPRA / VENDA", "CDB - CDBFICT01 - BANCO TESTE S/A", 1000, 1, 1000),
+        ]
+
+        movements, _ = parse_movements_file(movement_file(*rows))
+
+        self.assertEqual(len(movements), 1)
+
+    def test_name_change_does_not_change_fingerprint(self):
+        first, _ = parse_movements_file(movement_file(buy("01/02/2024", "ITSA4 - ITAUSA S.A.", 1, 10.0)))
+        second, _ = parse_movements_file(movement_file(buy("01/02/2024", "ITSA4 - ITAUSA S/A", 1, 10.0)))
+
+        self.assertEqual(first[0].fingerprint, second[0].fingerprint)
+
+    def test_old_and_new_nu_names_are_same_broker(self):
+        names = ["NU INVEST CORRETORA DE VALORES S.A.", "NU INVESTIMENTOS S.A. - CTVM", "EASYNVEST - TITULO CV S/A"]
+        movements, _ = parse_movements_file(
+            movement_file(*[buy("01/02/2024", "ITSA4 - X", 1, 10.0, name) for name in names])
+        )
+
+        self.assertEqual({m.broker for m in movements}, {"Nu Invest"})
+
+    def test_reads_dash_as_empty_and_flags_bad_lines(self):
+        rows = [
+            line("01/02/2024", "Desdobro", "BBAS3 - BB", 8),
+            ["Outro", "01/02/2024", "Compra", "X", NU, 1, 1, 1],
+            ["Credito", "sem data", "Compra", "X", NU, 1, 1, 1],
+        ]
+        movements, errors = parse_movements_file(movement_file(*rows))
+
+        self.assertIsNone(movements[0].value)
+        self.assertEqual([error["row"] for error in errors], [3, 4])
+
+    def test_missing_column_is_rejected(self):
+        with self.assertRaises(MovementFileError):
+            parse_movements_file(workbook_bytes({"Movimentação": [["Data", "Produto"]]}))
+
+
+class LedgerTests(TestCase):
+    def test_average_price_and_sale(self):
+        ledger = ledger_for(
+            buy("01/02/2024", "PETR4 - X", 10, 10.0),
+            buy("02/02/2024", "PETR4 - X", 10, 20.0),
+            sell("03/02/2024", "PETR4 - X", 5, 30.0),
+        )
+
+        quantity, invested = totals(ledger, "PETR4")
+
+        self.assertEqual((quantity, invested), (Decimal(15), Decimal(225)))
+        self.assertEqual(_ledger_position(ledger, "PETR4").realized, Decimal(75))
+
+    def test_split_and_bonus_keep_total_cost(self):
+        ledger = ledger_for(
+            buy("01/02/2024", "BBAS3 - X", 8, 34.0),
+            line("17/04/2024", "Desdobro", "BBAS3 - X", 8),
+            line("18/04/2024", "Bonificação em Ativos", "BBAS3 - X", 1),
+        )
+
+        self.assertEqual(totals(ledger, "BBAS3"), (Decimal(17), Decimal(272)))
+
+    def test_grouping_informs_final_balance_per_broker(self):
+        ledger = ledger_for(
+            buy("01/02/2024", "GOGL34 - X", 60, 10.0),
+            line("30/08/2022", "Desdobro", "OTHER3 - X", 1),
+            line("02/02/2024", "Grupamento", "GOGL34 - X", 4.8),
+        )
+
+        self.assertEqual(totals(ledger, "GOGL34"), (Decimal("4.8"), Decimal(600)))
+
+    def test_balance_update_equal_to_balance_changes_nothing(self):
+        ledger = ledger_for(
+            buy("01/02/2024", "BOVA11 - X", 3, 10.0), line("02/02/2024", "Atualização", "BOVA11 - X", 3)
+        )
+
+        self.assertEqual(totals(ledger, "BOVA11"), (Decimal(3), Decimal(30)))
+
+    def test_balance_update_different_from_balance_adds(self):
+        ledger = ledger_for(
+            buy("01/02/2024", "HGLG11 - X", 3, 100.0), line("02/02/2024", "Atualização", "HGLG11 - X", 1.17)
+        )
+
+        self.assertEqual(totals(ledger, "HGLG11"), (Decimal("4.17"), Decimal(300)))
+
+    def test_fraction_reduces_quantity_and_proportional_cost(self):
+        ledger = ledger_for(
+            buy("01/02/2024", "HGLG11 - X", 4, 100.0),
+            line("02/02/2024", "Fração em Ativos", "HGLG11 - X", 1, direction="Debito"),
+        )
+
+        self.assertEqual(totals(ledger, "HGLG11"), (Decimal(3), Decimal(300)))
+
+    def test_transfer_keeps_cost_even_when_outgoing_comes_first(self):
+        ledger = ledger_for(
+            buy("01/02/2024", "HGLG11 - X", 3, 100.0, XP),
+            line("02/02/2024", "Transferência", "HGLG11 - X", 3, direction="Debito", institution=XP),
+            line("02/02/2024", "Transferência", "HGLG11 - X", 3),
+        )
+
+        self.assertEqual(totals(ledger, "HGLG11"), (Decimal(3), Decimal(300)))
+
+    def test_maturity_with_zero_value_is_not_a_loss(self):
+        ledger = ledger_for(
+            line("01/02/2024", "COMPRA / VENDA", "CDB - CDB1", 1, 1000, 1000),
+            line("01/02/2025", "VENCIMENTO", "CDB - CDB1", 1, 0, 0, "Debito"),
+        )
+
+        self.assertEqual(_ledger_position(ledger, "CDB1").realized, Decimal(0))
+        self.assertEqual(totals(ledger, "CDB1")[0], Decimal(0))
+
+    def test_maturity_with_value_realizes_gain(self):
+        ledger = ledger_for(
+            line("01/02/2024", "COMPRA / VENDA", "CDB - CDB1", 1, 1000, 1000),
+            line("01/02/2025", "VENCIMENTO", "CDB - CDB1", 1, 1191.38, 1191.38, "Debito"),
+        )
+
+        self.assertEqual(_ledger_position(ledger, "CDB1").realized, Decimal("191.38"))
+
+    def test_ticker_change_on_same_day_moves_cost(self):
+        ledger = ledger_for(
+            buy("01/02/2024", "BCFF11 - X", 40, 10.0),
+            line("13/12/2024", "Atualização", "BCFF11 - X", 40),
+            line("13/12/2024", "Atualização", "BTHF11 - X", 32),
+            line("19/12/2024", "Resgate", "BCFF11 - X", 40, 0.01, 0.4),
+            snapshot=[snapshot_row("BTHF11", 32)],
+        )
+
+        self.assertEqual(ledger.successions, [("BCFF11", "BTHF11")])
+        self.assertEqual(totals(ledger, "BTHF11"), (Decimal(32), Decimal(400)))
+        self.assertEqual(totals(ledger, "BCFF11")[0], Decimal(0))
+        self.assertEqual(_ledger_position(ledger, "BCFF11").realized, Decimal(0))
+
+    def test_ticker_change_by_same_quantity_moves_cost(self):
+        ledger = ledger_for(
+            buy("01/02/2022", "CARD3 - X", 4, 10.0),
+            line("16/09/2022", "Atualização", "CSUD3 - X", 4),
+            line("20/09/2022", "Rendimento", "CARD3 - X", 4, 0.1, 0.4),
+            snapshot=[snapshot_row("CSUD3", 4)],
+        )
+
+        self.assertEqual(ledger.successions, [("CARD3", "CSUD3")])
+        self.assertEqual(totals(ledger, "CSUD3"), (Decimal(4), Decimal(40)))
+
+    def test_old_ticker_with_later_operations_is_not_a_ticker_change(self):
+        ledger = ledger_for(
+            buy("01/02/2024", "AERI3 - X", 6, 10.0),
+            line("16/04/2024", "Atualização", "CNES11 - X", 6),
+            line("15/05/2024", "Grupamento", "AERI3 - X", 1),
+            snapshot=[snapshot_row("OUTRO3", 1)],
+        )
+
+        self.assertEqual(ledger.successions, [])
+
+    def test_fixed_income_is_never_treated_as_ticker_change(self):
+        ledger = ledger_for(
+            line("01/02/2024", "Compra", "Tesouro Prefixado 2025", 1, 100, 100),
+            line("02/02/2024", "Atualização", "EVTC31 - X", 1),
+            snapshot=[snapshot_row("OUTRO3", 1)],
+        )
+
+        self.assertEqual(ledger.successions, [])
+
+    def test_ambiguous_ticker_change_keeps_no_link(self):
+        ledger = ledger_for(
+            buy("01/02/2024", "AAAA3 - X", 2, 10.0),
+            buy("01/02/2024", "BBBB3 - X", 2, 10.0),
+            line("02/02/2024", "Atualização", "CCCC3 - X", 2),
+            snapshot=[snapshot_row("CCCC3", 2)],
+        )
+
+        self.assertEqual(ledger.successions, [])
+
+    def test_snapshot_closes_positions_without_exit_record(self):
+        ledger = ledger_for(buy("01/02/2024", "SARE11 - X", 70, 10.0), snapshot=[snapshot_row("OUTRO3", 1)])
+
+        self.assertEqual(totals(ledger, "SARE11"), (Decimal(0), Decimal(0)))
+        self.assertEqual(_ledger_position(ledger, "SARE11").realized, Decimal(0))
+        self.assertEqual([d.action for d in ledger.differences if d.name == "SARE11"], ["closed"])
+
+    def test_position_closed_without_record_exits_on_last_activity(self):
+        ledger = ledger_for(
+            buy("01/02/2022", "SARE11 - X", 70, 10.0),
+            line("15/03/2023", "Rendimento", "SARE11 - X", 70, 0.1, 7),
+            snapshot=[snapshot_row("OUTRO3", 1)],
+        )
+
+        closing = [spec for spec in ledger.orders if spec.name == "SARE11" and spec.kind == Order.KIND_RECONCILIATION]
+        self.assertEqual([spec.date for spec in closing], [date(2023, 3, 15)])
+
+    def test_trim_of_position_still_held_stays_on_snapshot_date(self):
+        ledger = ledger_for(buy("01/02/2022", "PETR4 - X", 4, 10.0), snapshot=[snapshot_row("PETR4", 1)])
+
+        closing = [spec for spec in ledger.orders if spec.kind == Order.KIND_RECONCILIATION]
+        self.assertEqual([spec.date for spec in closing], [date(2026, 11, 2)])
+
+    def test_snapshot_adds_missing_quantity_at_estimated_price(self):
+        ledger = ledger_for(buy("01/02/2024", "PETR4 - X", 1, 10.0), snapshot=[snapshot_row("PETR4", 3, 50)])
+
+        self.assertEqual(totals(ledger, "PETR4"), (Decimal(3), Decimal(110)))
+        estimated = [spec for spec in ledger.orders if spec.cost_estimated]
+        self.assertEqual([(s.volume, s.price) for s in estimated], [(Decimal(2), Decimal(50))])
+
+    def test_snapshot_trims_excess_quantity_keeping_average_price(self):
+        ledger = ledger_for(buy("01/02/2024", "PETR4 - X", 4, 10.0), snapshot=[snapshot_row("PETR4", 1)])
+
+        self.assertEqual(totals(ledger, "PETR4"), (Decimal(1), Decimal(10)))
+
+    def test_snapshot_fixes_broker_without_changing_cost(self):
+        ledger = ledger_for(buy("01/02/2024", "PETR4 - X", 2, 10.0, XP), snapshot=[snapshot_row("PETR4", 2)])
+
+        self.assertEqual(ledger.matched, 1)
+        self.assertEqual(ledger.differences, [])
+        self.assertEqual(totals(ledger, "PETR4"), (Decimal(2), Decimal(20)))
+
+    def test_movement_after_snapshot_applies_on_top_of_it(self):
+        ledger = ledger_for(
+            buy("01/02/2024", "PETR4 - X", 1, 10.0),
+            buy("05/11/2026", "PETR4 - X", 1, 20.0),
+            snapshot=[snapshot_row("PETR4", 1)],
+        )
+
+        self.assertEqual(totals(ledger, "PETR4"), (Decimal(2), Decimal(30)))
+
+    def test_rights_and_transferred_income_change_nothing(self):
+        ledger = ledger_for(
+            line("01/02/2024", "Direito de Subscrição", "BTLG12 - X", 3),
+            line("01/02/2024", "Cessão de Direitos", "BBDC2 - X", 1),
+            line("01/02/2024", "Dividendo - Transferido", "PETR4 - X", 1, 1, 1),
+        )
+
+        self.assertEqual(ledger.orders, [])
+        self.assertEqual(ledger.unknown_types, {})
+
+    def test_unknown_type_is_reported(self):
+        self.assertEqual(ledger_for(line("01/02/2024", "Tipo Novo", "PETR4 - X", 1)).unknown_types, {"Tipo Novo": 1})
+
+
+class MovementImportTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("investidor", password="senha")
+
+    def run_import(self, *rows, replace_manual=False):
+        parsed, _ = parse_movements_file(movement_file(*rows))
+        return import_movements(self.user, parsed, replace_manual)
+
+    def quantity(self, name):
+        return summarize_orders(list(Order.objects.filter(user=self.user, name=name)))[0]
+
+    def test_full_file_then_overlapping_smaller_file_adds_only_new_rows(self):
+        old = buy("01/02/2024", "PETR4 - X", 1, 10.0)
+        repeated = buy("02/02/2024", "PETR4 - X", 1, 11.0)
+        self.run_import(old, repeated, list(repeated))
+        self.assertEqual(self.quantity("PETR4"), Decimal(3))
+
+        new_rows, _ = self.run_import(repeated, buy("03/02/2024", "PETR4 - X", 1, 12.0))
+
+        self.assertEqual(new_rows, 1)
+        self.assertEqual(Movement.objects.count(), 4)
+        self.assertEqual(self.quantity("PETR4"), Decimal(4))
+
+    def test_reimporting_same_file_changes_nothing(self):
+        rows = [buy("01/02/2024", "PETR4 - X", 1, 10.0), line("03/02/2024", "Dividendo", "PETR4 - X", 1, 1, 1)]
+        self.run_import(*rows)
+        first = list(Order.objects.values_list("name", "volume", "price"))
+
+        new_rows, _ = self.run_import(*rows)
+
+        self.assertEqual(new_rows, 0)
+        self.assertEqual(list(Order.objects.values_list("name", "volume", "price")), first)
+
+    def test_new_file_with_more_copies_adds_the_difference(self):
+        row = buy("01/02/2024", "PETR4 - X", 1, 10.0)
+        self.run_import(row)
+
+        new_rows, _ = self.run_import(row, list(row))
+
+        self.assertEqual(new_rows, 1)
+        self.assertEqual(self.quantity("PETR4"), Decimal(2))
+
+    def test_files_in_any_order_give_same_result(self):
+        first = buy("01/02/2024", "PETR4 - X", 10, 10.0)
+        second = sell("02/02/2024", "PETR4 - X", 4, 20.0)
+        self.run_import(second)
+        self.run_import(first)
+
+        self.assertEqual(self.quantity("PETR4"), Decimal(6))
+        self.assertEqual(realized_gain(list(Order.objects.filter(user=self.user))), Decimal(40))
+
+    def test_replaces_estimated_orders_from_position_report(self):
+        plan = build_plan(self.user, parse({"Acoes": [STOCK_HEADER, stock("PETR4", quantity=2, close=50.0)]}), SNAPSHOT)
+        apply_plan(self.user, plan)
+        self.assertTrue(Order.objects.get(name="PETR4").cost_estimated)
+
+        self.run_import(buy("01/02/2024", "PETR4 - X", 2, 30.0))
+
+        order = Order.objects.get(name="PETR4", kind=Order.KIND_TRADE)
+        self.assertFalse(order.cost_estimated)
+        self.assertEqual(order.price, Decimal(30))
+        self.assertEqual(Order.objects.filter(source=Order.SOURCE_POSITION).count(), 0)
+
+    def test_uses_report_metadata_for_fixed_income(self):
+        apply_plan(self.user, build_plan(self.user, parse({"Renda Fixa": [RF_HEADER, fixed_income("CDB1")]}), SNAPSHOT))
+
+        self.run_import(line("01/02/2024", "COMPRA / VENDA", "CDB - CDB1 - BANCO TESTE S/A", 1000, 1, 1000))
+
+        order = Order.objects.get(name="CDB1", kind=Order.KIND_TRADE)
+        self.assertEqual(order.maturity_date, date(2099, 2, 10))
+        self.assertEqual(order.index, "P")
+        self.assertEqual(order.issuer, "BANCO TESTE S/A")
+
+    def test_position_report_after_movements_recalculates_instead_of_estimating(self):
+        self.run_import(buy("01/02/2024", "PETR4 - X", 2, 30.0), buy("02/02/2024", "SAIU3 - X", 5, 10.0))
+
+        apply_plan(
+            self.user,
+            build_plan(self.user, parse({"Acoes": [STOCK_HEADER, stock("PETR4", quantity=2, close=50.0)]}), SNAPSHOT),
+        )
+
+        self.assertEqual(self.quantity("PETR4"), Decimal(2))
+        self.assertEqual(self.quantity("SAIU3"), Decimal(0))
+        self.assertFalse(Order.objects.filter(cost_estimated=True).exists())
+        self.assertEqual(summarize_orders(list(Order.objects.filter(name="PETR4")))[1], Decimal(60))
+
+    def test_keeps_manual_orders_unless_asked(self):
+        manual = Order.objects.create(
+            user=self.user,
+            name="PETR4",
+            broker="XP",
+            asset_type="AC",
+            order_type=1,
+            date=SNAPSHOT,
+            price=Decimal(1),
+            volume=Decimal(1),
+        )
+        other = Order.objects.create(
+            user=self.user,
+            name="MANUAL3",
+            broker="XP",
+            asset_type="AC",
+            order_type=1,
+            date=SNAPSHOT,
+            price=Decimal(1),
+            volume=Decimal(1),
+        )
+        rows = [buy("01/02/2024", "PETR4 - X", 2, 30.0)]
+
+        self.run_import(*rows)
+        self.assertTrue(Order.objects.filter(pk=manual.pk).exists())
+
+        self.run_import(*rows, replace_manual=True)
+        self.assertFalse(Order.objects.filter(pk=manual.pk).exists())
+        self.assertTrue(Order.objects.filter(pk=other.pk).exists())
+
+    def test_each_user_has_own_movements(self):
+        row = buy("01/02/2024", "PETR4 - X", 1, 10.0)
+        other = User.objects.create_user("outro", password="senha")
+        parsed, _ = parse_movements_file(movement_file(row))
+        import_movements(other, parsed)
+
+        new_rows, _ = self.run_import(row)
+
+        self.assertEqual(new_rows, 1)
+        self.assertEqual(Movement.objects.filter(user=other).count(), 1)
+
+    def test_rebuild_orders_is_idempotent(self):
+        self.run_import(buy("01/02/2024", "PETR4 - X", 2, 30.0))
+        before = Order.objects.count()
+
+        rebuild_orders(self.user)
+
+        self.assertEqual(Order.objects.count(), before)
+
+
+class MovementEndpointTests(TestCase):
+    PREVIEW = "/api/orders/import/preview"
+    CONFIRM = "/api/orders/import/confirm"
+
+    def setUp(self):
+        self.user = User.objects.create_user("investidor", password="senha")
+        self.client.force_login(self.user)
+
+    def upload(self, *rows):
+        return SimpleUploadedFile("movimentacao-2026-11-02.xlsx", movement_file(*rows).read())
+
+    def test_preview_reports_duplicates_without_writing(self):
+        rows = [buy("01/02/2024", "PETR4 - X", 1, 10.0), line("03/02/2024", "Tipo Novo", "PETR4 - X", 1)]
+
+        body = self.client.post(self.PREVIEW, {"file": self.upload(*rows)}).json()
+
+        self.assertEqual(body["file_type"], "movements")
+        self.assertEqual((body["total_rows"], body["new_rows"], body["duplicate_rows"]), (2, 2, 0))
+        self.assertEqual(body["unknown_types"], {"Tipo Novo": 1})
+        self.assertEqual(Movement.objects.count(), 0)
+        self.assertEqual(Order.objects.count(), 0)
+
+    @mock.patch("wallet.views.start_history_rebuild")
+    def test_confirm_then_preview_shows_everything_as_duplicate(self, rebuild):
+        rows = [buy("01/02/2024", "PETR4 - X", 1, 10.0)]
+
+        response = self.client.post(self.CONFIRM, {"file": self.upload(*rows)})
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["new_rows"], 1)
+        rebuild.assert_called_once()
+        body = self.client.post(self.PREVIEW, {"file": self.upload(*rows)}).json()
+        self.assertEqual((body["new_rows"], body["duplicate_rows"]), (0, 1))
+
+    @mock.patch("wallet.views.start_history_rebuild")
+    def test_confirm_can_replace_manual_orders(self, rebuild):
+        Order.objects.create(
+            user=self.user,
+            name="PETR4",
+            broker="XP",
+            asset_type="AC",
+            order_type=1,
+            date=SNAPSHOT,
+            price=Decimal(1),
+            volume=Decimal(1),
+        )
+        upload = self.upload(buy("01/02/2024", "PETR4 - X", 1, 10.0))
+        body = self.client.post(self.PREVIEW, {"file": upload}).json()
+        self.assertEqual(body["manual_conflicts"], [{"name": "PETR4", "count": 1}])
+
+        self.client.post(
+            self.CONFIRM, {"file": self.upload(buy("01/02/2024", "PETR4 - X", 1, 10.0)), "replace_manual": "true"}
+        )
+
+        self.assertFalse(Order.objects.filter(source=Order.SOURCE_MANUAL).exists())
+
+    def test_invalid_movement_file_is_rejected(self):
+        file = SimpleUploadedFile("m.xlsx", workbook_bytes({"Movimentação": [["Data"]]}).read())
+
+        self.assertEqual(self.client.post(self.PREVIEW, {"file": file}).status_code, 400)
+
+    @mock.patch("wallet.views.start_history_rebuild")
+    def test_imported_orders_cannot_be_edited_or_deleted(self, rebuild):
+        self.client.post(self.CONFIRM, {"file": self.upload(buy("01/02/2024", "PETR4 - X", 1, 10.0))})
+        order = Order.objects.get()
+
+        patch = self.client.patch(f"/api/order/{order.id}", data={"price": 1}, content_type="application/json")
+        delete = self.client.delete(f"/api/order/{order.id}")
+
+        self.assertEqual((patch.status_code, delete.status_code), (400, 400))
+        self.assertTrue(Order.objects.filter(pk=order.pk).exists())
+
+    @mock.patch("wallet.views.start_history_rebuild")
+    def test_income_endpoint_and_position_fields(self, rebuild):
+        AssetPrice.objects.create(ticker="PETR4", date=SNAPSHOT, close=20.0)
+        rows = [
+            buy("01/02/2024", "PETR4 - X", 10, 10.0),
+            line("03/02/2024", "Dividendo", "PETR4 - X", 10, 1, 10),
+            line("04/02/2024", "Juros Sobre Capital Próprio", "PETR4 - X", 10, 0.5, 5),
+            line("05/02/2024", "Dividendo - Cancelado", "PETR4 - X", 10, 0.1, 1, "Debito"),
+            line("06/02/2024", "Dividendo - Transferido", "PETR4 - X", 10, 9, 90),
+            line("07/02/2024", "Cobrança de Taxa Semestral", "Tesouro IPCA+ 2026", 0, "-", 2, "Debito"),
+            line("08/02/2024", "Resgate", "VELHO3 - X", 1, 3, 3),
+            sell("09/02/2024", "PETR4 - X", 5, 30.0),
+        ]
+        self.client.post(self.CONFIRM, {"file": self.upload(*rows)})
+
+        body = self.client.get("/api/income").json()
+        labels = sorted((row["type"], row["value"]) for row in body["rows"])
+        self.assertEqual(
+            labels, [("Dividendos", -1.0), ("Dividendos", 10.0), ("JCP", 5.0), ("Outros", 3.0), ("Taxas", -2.0)]
+        )
+        self.assertEqual(body["rows"][0]["asset_class"], "AC")
+        self.assertEqual(body["costs"]["PETR4"], 50.0)
+
+        position = self.client.get("/api/position").json()
+        asset = position["assets"][0]
+        self.assertEqual((asset["income"], asset["cost"], asset["profit"]), (14.0, 50.0, 50.0))
+        self.assertEqual(asset["total_return"], 64.0)
+        self.assertEqual(position["summary"]["realized_gain"], 100.0)
+        self.assertEqual(position["summary"]["income_total"], 17.0)
+
+    def test_income_requires_login(self):
+        self.client.logout()
+
+        self.assertEqual(self.client.get("/api/income").status_code, 401)
+
+
+class RebuildHistoryTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("investidor", password="senha")
+
+    def order(self, name="PETR4", asset_type="AC", **overrides):
+        fields = {
+            "user": self.user,
+            "name": name,
+            "broker": "XP",
+            "asset_type": asset_type,
+            "order_type": 1,
+            "date": date(2024, 1, 2),
+            "price": Decimal(10),
+            "volume": Decimal(10),
+        }
+        fields.update(overrides)
+        return Order.objects.create(**fields)
+
+    def price(self, day, close, ticker="PETR4"):
+        AssetPrice.objects.create(ticker=ticker, date=day, close=close)
+
+    def row(self, day, name="PETR4"):
+        return AssetConsolidatedValue.objects.get(user=self.user, name=name, date=day)
+
+    def test_values_each_day_with_quantity_of_that_day(self):
+        self.order()
+        self.order(kind=Order.KIND_EVENT, volume=Decimal(10), price=Decimal(0), date=date(2024, 1, 4))
+        self.price(date(2024, 1, 3), 10.0)
+        self.price(date(2024, 1, 4), 5.0)
+
+        rebuild_history(self.user)
+
+        self.assertEqual(self.row(date(2024, 1, 3)).value, Decimal(100))
+        self.assertEqual(self.row(date(2024, 1, 4)).value, Decimal(100))
+        self.assertEqual(self.row(date(2024, 1, 4)).invested, Decimal(100))
+
+    def test_replaces_previous_history_and_is_repeatable(self):
+        self.order()
+        self.price(date(2024, 1, 3), 10.0)
+        AssetConsolidatedValue.objects.create(
+            user=self.user,
+            name="ANTIGO3",
+            asset_type="AC",
+            date=date(2023, 1, 1),
+            value=1,
+            volume=1,
+            invested=1,
+        )
+
+        first = rebuild_history(self.user)
+
+        self.assertEqual(rebuild_history(self.user), first)
+        self.assertFalse(AssetConsolidatedValue.objects.filter(name="ANTIGO3").exists())
+
+    def test_snapshot_gives_exact_value_and_carries_fixed_income(self):
+        self.order()
+        self.order(name="CDB1", asset_type="RF", price=Decimal(1), volume=Decimal(1000), maturity_date=date(2030, 1, 1))
+        snapshot_day = date(2024, 1, 5)
+        PositionSnapshot.objects.bulk_create(
+            [
+                snapshot_row("PETR4", 10, 11, day=snapshot_day, user=self.user),
+                snapshot_row("CDB1", 1000, 1.2, day=snapshot_day, asset_type="RF", user=self.user),
+            ]
+        )
+        for day, close in ((date(2024, 1, 3), 10.0), (date(2024, 1, 8), 12.0)):
+            self.price(day, close)
+
+        rebuild_history(self.user)
+
+        before_snapshot = self.row(date(2024, 1, 3), "CDB1").value
+        self.assertGreater(before_snapshot, Decimal(1000))
+        self.assertLess(before_snapshot, Decimal(1200))
+        self.assertEqual(self.row(snapshot_day, "CDB1").value, Decimal(1200))
+        self.assertEqual(self.row(snapshot_day).value, Decimal(110))
+        self.assertEqual(self.row(date(2024, 1, 8), "CDB1").value, Decimal(1200))
+        self.assertEqual(self.row(date(2024, 1, 8)).value, Decimal(120))
+
+    def test_fixed_income_grows_smoothly_up_to_official_value(self):
+        self.order(name="CDB1", asset_type="RF", price=Decimal(1), volume=Decimal(1000), maturity_date=date(2030, 1, 1))
+        self.price(date(2024, 1, 2), 1.0, ticker="OUTRO3")
+        self.price(date(2024, 7, 2), 1.0, ticker="OUTRO3")
+        PositionSnapshot.objects.bulk_create(
+            [
+                snapshot_row("CDB1", 1000, 1.21, day=date(2025, 12, 31), asset_type="RF", user=self.user),
+            ]
+        )
+
+        rebuild_history(self.user)
+
+        self.assertEqual(self.row(date(2024, 1, 2), "CDB1").value, Decimal(1000))
+        middle = self.row(date(2024, 7, 2), "CDB1").value
+        self.assertGreater(middle, Decimal(1000))
+        self.assertLess(middle, Decimal(1210))
+        self.assertEqual(self.row(date(2025, 12, 31), "CDB1").value, Decimal(1210))
+
+    def test_position_history_aggregates_by_date(self):
+        for name, value in (("A", 10), ("B", 5), ("profit", 100)):
+            AssetConsolidatedValue.objects.create(
+                user=self.user,
+                name=name,
+                asset_type="AC",
+                date=date(2024, 1, 3),
+                value=value,
+                volume=1,
+                invested=2,
+            )
+        self.client.force_login(self.user)
+
+        self.assertEqual(
+            self.client.get("/api/position-history").json(),
+            {"labels": ["03/01/2024"], "values": [15.0], "invested": [4.0]},
+        )
+
+    def test_does_not_touch_other_users(self):
+        other = User.objects.create_user("outro", password="senha")
+        AssetConsolidatedValue.objects.create(
+            user=other,
+            name="X",
+            asset_type="AC",
+            date=date(2023, 1, 1),
+            value=1,
+            volume=1,
+            invested=1,
+        )
+        self.order()
+        self.price(date(2024, 1, 3), 10.0)
+
+        rebuild_history(self.user)
+
+        self.assertTrue(AssetConsolidatedValue.objects.filter(user=other).exists())
+
+
+class SnapshotMigrationTests(TestCase):
+    def test_creates_snapshot_from_estimated_orders(self):
+        user = User.objects.create_user("investidor", password="senha")
+        apply_plan(
+            user, build_plan(user, parse({"Acoes": [STOCK_HEADER, stock("PETR4", quantity=2, close=50.0)]}), SNAPSHOT)
+        )
+        PositionSnapshot.objects.all().delete()
+        Order.objects.update(source=Order.SOURCE_MANUAL)
+        Order.objects.create(
+            user=user,
+            name="MANUAL3",
+            broker="XP",
+            asset_type="AC",
+            order_type=1,
+            date=SNAPSHOT,
+            price=Decimal(1),
+            volume=Decimal(1),
+        )
+
+        importlib.import_module("wallet.migrations.0013_mark_position_orders_and_snapshots").forwards(apps, None)
+
+        row = PositionSnapshot.objects.get()
+        self.assertEqual((row.name, row.quantity, row.value, row.date), ("PETR4", Decimal(2), Decimal(100), SNAPSHOT))
+        self.assertEqual(Order.objects.get(name="PETR4").source, Order.SOURCE_POSITION)
+        self.assertEqual(Order.objects.get(name="MANUAL3").source, Order.SOURCE_MANUAL)
