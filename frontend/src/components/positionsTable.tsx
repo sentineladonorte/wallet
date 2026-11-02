@@ -12,7 +12,7 @@ import { formatPercent, formatSignedPercent } from '@/lib/format';
 import { useFormat } from '@/lib/privacy';
 import { Position } from '@/types';
 
-type SortKey = 'name' | 'asset_class' | 'category' | 'volume' | 'average' | 'price' | 'value' | 'profit_pct';
+type SortKey = 'name' | 'asset_class' | 'category' | 'volume' | 'average' | 'price' | 'value' | 'profit_pct' | 'income';
 
 const COLUMNS: { key: SortKey; label: string; numeric?: boolean; className?: string }[] = [
   { key: 'name', label: 'Ativo' },
@@ -23,6 +23,7 @@ const COLUMNS: { key: SortKey; label: string; numeric?: boolean; className?: str
   { key: 'price', label: 'Preço', numeric: true, className: 'hidden sm:table-cell' },
   { key: 'value', label: 'Valor', numeric: true },
   { key: 'profit_pct', label: 'Resultado', numeric: true },
+  { key: 'income', label: 'Proventos', numeric: true, className: 'hidden xl:table-cell' },
 ];
 
 const averagePrice = (asset: Position) => (asset.volume ? asset.cost / asset.volume : null);
@@ -46,10 +47,10 @@ const csvCell = (value: string | number | null) => {
 };
 
 const exportCsv = (assets: Position[]) => {
-  const header = ['Ativo', 'Descrição', 'Classe', 'Categoria', 'Subcategoria', 'Quantidade', 'Custo', 'Preço', 'Valor', 'Resultado (R$)', 'Resultado (%)', 'Custo estimado'];
+  const header = ['Ativo', 'Descrição', 'Classe', 'Categoria', 'Subcategoria', 'Quantidade', 'Custo', 'Preço', 'Valor', 'Resultado (R$)', 'Resultado (%)', 'Proventos', 'Custo estimado'];
   const rows = assets.map((asset) => [
     asset.name, asset.description, classLabel(asset.asset_class), asset.category, asset.sub_category,
-    asset.volume, asset.cost, asset.price, asset.value, asset.profit, asset.profit_pct, asset.cost_estimated ? 'Sim' : 'Não',
+    asset.volume, asset.cost, asset.price, asset.value, asset.profit, asset.profit_pct, asset.income, asset.cost_estimated ? 'Sim' : 'Não',
   ]);
   const content = [header, ...rows].map((row) => row.map(csvCell).join(';')).join('\n');
   // O BOM faz o Excel reconhecer os acentos.
@@ -186,6 +187,9 @@ const PositionsTable: React.FC<{
                 <td className="py-2 px-2 text-right tabular-nums whitespace-nowrap">
                   <ProfitText value={asset.profit}>{formatSignedPercent(asset.profit_pct)}</ProfitText>
                   {asset.profit !== null && <div className="text-xs text-muted">{formatCurrency(asset.profit)}</div>}
+                </td>
+                <td className="py-2 px-2 text-right tabular-nums hidden xl:table-cell whitespace-nowrap text-soft">
+                  {asset.income ? formatCurrency(asset.income) : '-'}
                 </td>
                 <td className="py-2 px-2 whitespace-nowrap text-right">
                   <Link

@@ -24,7 +24,7 @@ const isoToTimestamp = (iso: string) => {
 
 const orderPoints = (orders: Order[], orderType: 1 | -1) =>
   orders
-    .filter((order) => order.order_type === orderType)
+    .filter((order) => order.order_type === orderType && order.kind === 'trade')
     .map((order) => [isoToTimestamp(order.date), order.price])
     .sort((a, b) => a[0] - b[0]);
 

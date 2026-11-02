@@ -14,6 +14,11 @@ import { errorMessage } from '@/lib/useApi';
 import api from '@/services/api';
 import { Order } from '@/types';
 
+const operationLabel = (order: Order) => {
+  if (order.kind === 'trade') return order.order_type === 1 ? 'Compra' : 'Venda';
+  return order.note || (order.order_type === 1 ? 'Entrada' : 'Saída');
+};
+
 const OrdersTable: React.FC<{ orders: Order[]; onChanged: () => void }> = ({ orders, onChanged }) => {
   const { formatCurrency, formatQuantity } = useFormat();
   const toast = useToast();
@@ -71,13 +76,19 @@ const OrdersTable: React.FC<{ orders: Order[]; onChanged: () => void }> = ({ ord
               </td>
               <td className="py-2 px-2 hidden md:table-cell whitespace-nowrap">{classLabel(order.asset_type)}</td>
               <td className="py-2 px-2 hidden md:table-cell whitespace-nowrap text-soft">{order.broker}</td>
-              <td className="py-2 px-2">{order.order_type === 1 ? 'Compra' : 'Venda'}</td>
+              <td className="py-2 px-2">{operationLabel(order)}</td>
               <td className="py-2 px-2 text-right tabular-nums hidden sm:table-cell">{formatQuantity(order.volume)}</td>
               <td className="py-2 px-2 text-right tabular-nums hidden sm:table-cell whitespace-nowrap">{formatCurrency(order.price)}</td>
               <td className="py-2 px-2 text-right tabular-nums whitespace-nowrap">{formatCurrency(order.total)}</td>
               <td className="py-2 px-2 text-right whitespace-nowrap">
-                <IconButton label={`Editar boleta de ${order.name}`} onClick={() => setEditing(order)}><EditIcon fontSize="small" /></IconButton>
-                <IconButton label={`Excluir boleta de ${order.name}`} onClick={() => setDeleting(order)}><DeleteIcon fontSize="small" /></IconButton>
+                {order.source === 'movement' ? (
+                  <span title="Vem do extrato de movimentação da B3" className="text-xs text-muted">B3</span>
+                ) : (
+                  <>
+                    <IconButton label={`Editar boleta de ${order.name}`} onClick={() => setEditing(order)}><EditIcon fontSize="small" /></IconButton>
+                    <IconButton label={`Excluir boleta de ${order.name}`} onClick={() => setDeleting(order)}><DeleteIcon fontSize="small" /></IconButton>
+                  </>
+                )}
               </td>
             </tr>
           ))}
