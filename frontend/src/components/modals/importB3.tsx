@@ -39,6 +39,127 @@ interface Preview {
   sheets: { sheet: string; rows: number; total: number; footer_total: number | null; matches_footer: boolean | null }[];
 }
 
+interface MovementPreview {
+  file_type: 'movements';
+  total_rows: number;
+  new_rows: number;
+  duplicate_rows: number;
+  first_date: string | null;
+  last_date: string | null;
+  errors: { row: number; message: string }[];
+  unknown_types: Record<string, number>;
+  snapshot_date: string | null;
+  positions_in_snapshot: number;
+  positions_matched: number;
+  differences: { name: string; ledger: number; snapshot: number; action: 'estimated_buy' | 'closed' }[];
+  successions: { old: string; new: string }[];
+  orders_replaced: number;
+  orders_after: number;
+  manual_conflicts: { name: string; count: number }[];
+}
+
+const MovementSummary: React.FC<{
+  preview: MovementPreview;
+  replaceManual: boolean;
+  onReplaceManualChange: (value: boolean) => void;
+}> = ({ preview, replaceManual, onReplaceManualChange }) => {
+  const { formatQuantity } = useFormat();
+  const estimated = preview.differences.filter((item) => item.action === 'estimated_buy');
+  const closed = preview.differences.filter((item) => item.action === 'closed');
+  const unknown = Object.keys(preview.unknown_types);
+
+  return (
+    <>
+      <dl className="flex flex-wrap gap-x-6 gap-y-2 text-sm mb-4">
+        <div><dt className="text-xs text-muted">Período</dt><dd className="font-semibold tabular-nums">{formatDate(preview.first_date)} a {formatDate(preview.last_date)}</dd></div>
+        <div><dt className="text-xs text-muted">Linhas novas</dt><dd className="font-semibold tabular-nums">{preview.new_rows}</dd></div>
+        <div><dt className="text-xs text-muted">Já importadas</dt><dd className="font-semibold tabular-nums">{preview.duplicate_rows}</dd></div>
+        <div><dt className="text-xs text-muted">Boletas depois</dt><dd className="font-semibold tabular-nums">{preview.orders_after}</dd></div>
+      </dl>
+
+      {preview.new_rows === 0 && (
+        <p className="mb-4 p-3 rounded-lg bg-raised text-soft text-sm">Todas as linhas deste arquivo já foram importadas. Nada será duplicado.</p>
+      )}
+
+      {preview.snapshot_date ? (
+        <p className="mb-4 text-sm text-soft">
+          Conferência com a posição da B3 de {formatDate(preview.snapshot_date)}:{' '}
+          <strong className="tabular-nums">{preview.positions_matched} de {preview.positions_in_snapshot}</strong> ativos com a quantidade exata.
+        </p>
+      ) : (
+        <p className="mb-4 p-3 rounded-lg bg-warn/10 text-warn text-sm">
+          Importe também o relatório de posição da B3. O extrato não informa vencimentos nem todas as saídas da carteira,
+          então, sem o relatório, títulos de renda fixa não aparecem e ativos antigos podem continuar listados.
+        </p>
+      )}
+
+      {preview.orders_replaced > 0 && (
+        <p className="mb-4 text-sm text-soft">
+          As {preview.orders_replaced} boletas geradas por importações anteriores serão recalculadas com o histórico real.
+        </p>
+      )}
+
+      {preview.manual_conflicts.length > 0 && (
+        <section className="mb-4 p-3 rounded-lg bg-warn/10 text-sm">
+          <h3 className="font-medium text-warn mb-1">Boletas manuais de ativos que estão no extrato</h3>
+          <p className="text-soft mb-2">
+            {preview.manual_conflicts.map((item) => `${item.name} (${item.count})`).join(', ')}.
+            {' '}Se elas registram as mesmas operações, a quantidade ficará dobrada.
+          </p>
+          <label className="flex items-center gap-2 text-soft">
+            <input type="checkbox" checked={replaceManual} onChange={(event) => onReplaceManualChange(event.target.checked)} />
+            Apagar essas boletas manuais e usar só o extrato
+          </label>
+        </section>
+      )}
+
+      {estimated.length > 0 && (
+        <section className="mb-4 text-sm">
+          <h3 className="font-medium mb-1">Sem registro de compra no extrato ({estimated.length})</h3>
+          <p className="text-xs text-muted mb-1">A quantidade que falta entra com custo estimado pelo preço atual.</p>
+          <ul className="list-disc pl-5 text-soft">
+            {estimated.map((item) => <li key={item.name}>{item.name}: {formatQuantity(item.ledger)} no extrato, {formatQuantity(item.snapshot)} na posição</li>)}
+          </ul>
+        </section>
+      )}
+
+      {preview.successions.length > 0 && (
+        <p className="mb-4 text-sm text-soft">
+          Trocas de ticker identificadas, com o custo levado para o novo:{' '}
+          {preview.successions.map((item) => `${item.old} → ${item.new}`).join(', ')}.
+        </p>
+      )}
+
+      {closed.length > 0 && (
+        <details className="mb-4 border border-line rounded-lg">
+          <summary className="cursor-pointer px-3 py-2 text-sm font-medium">Encerrados sem baixa no extrato ({closed.length})</summary>
+          <p className="px-3 text-xs text-muted">
+            O extrato não registra a saída destes ativos, e eles não estão na posição oficial. Saem da carteira sem gerar lucro nem prejuízo.
+          </p>
+          <p className="px-3 py-2 text-sm text-soft">{closed.map((item) => item.name).join(', ')}</p>
+        </details>
+      )}
+
+      {unknown.length > 0 && (
+        <section className="mb-4 p-3 rounded-lg bg-warn/10 text-sm">
+          <h3 className="font-medium text-warn mb-1">Tipos de movimentação não reconhecidos</h3>
+          <p className="text-soft">
+            {unknown.map((type) => `${type} (${preview.unknown_types[type]})`).join(', ')}.
+            {' '}Essas linhas ficam guardadas, mas não alteram a carteira.
+          </p>
+        </section>
+      )}
+
+      {preview.errors.length > 0 && (
+        <section className="mb-4 p-3 rounded-lg bg-loss/10 text-sm">
+          <h3 className="font-medium text-loss mb-1">Linhas que não serão importadas ({preview.errors.length})</h3>
+          <p>{preview.errors.slice(0, 20).map((item) => `linha ${item.row}`).join(', ')}.</p>
+        </section>
+      )}
+    </>
+  );
+};
+
 const PlannedOrders: React.FC<{ title: string; orders: PlannedOrder[] }> = ({ title, orders }) => {
   const { formatCurrency, formatQuantity } = useFormat();
   if (orders.length === 0) return null;
@@ -82,6 +203,8 @@ const ImportB3Modal: React.FC<{ onClose: () => void; onImported: () => void }> =
   const toast = useToast();
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
+  const [movementPreview, setMovementPreview] = useState<MovementPreview | null>(null);
+  const [replaceManual, setReplaceManual] = useState(false);
   const [snapshotDate, setSnapshotDate] = useState('');
   const [closeMissing, setCloseMissing] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -99,12 +222,18 @@ const ImportB3Modal: React.FC<{ onClose: () => void; onImported: () => void }> =
     setIsLoading(true);
     setError(null);
     try {
-      const response = await api.post<Preview>('/orders/import/preview', buildForm(date));
-      setPreview(response.data);
-      setSnapshotDate(response.data.snapshot_date);
-      setCloseMissing((selected) => selected.filter((key) => response.data.missing.some((item) => item.key === key)));
+      const response = await api.post<Preview | MovementPreview>('/orders/import/preview', buildForm(date));
+      if ('total_rows' in response.data) {
+        setMovementPreview(response.data);
+        return;
+      }
+      const positionPreview = response.data;
+      setPreview(positionPreview);
+      setSnapshotDate(positionPreview.snapshot_date);
+      setCloseMissing((selected) => selected.filter((key) => positionPreview.missing.some((item) => item.key === key)));
     } catch (requestError) {
       setPreview(null);
+      setMovementPreview(null);
       setError(errorMessage(requestError, 'Não foi possível ler o arquivo'));
     } finally {
       setIsLoading(false);
@@ -117,9 +246,12 @@ const ImportB3Modal: React.FC<{ onClose: () => void; onImported: () => void }> =
     try {
       const form = buildForm(snapshotDate);
       closeMissing.forEach((key) => form.append('close_missing', key));
-      const response = await api.post<{ created_orders: number }>('/orders/import/confirm', form);
+      if (replaceManual) form.append('replace_manual', 'true');
+      const response = await api.post<{ created_orders: number; new_rows?: number }>('/orders/import/confirm', form);
       onImported();
-      toast(`Importação concluída: ${response.data.created_orders} boleta(s) criada(s)`);
+      toast(movementPreview
+        ? `Importação concluída: ${response.data.new_rows} linha(s) nova(s). O histórico está sendo recalculado.`
+        : `Importação concluída: ${response.data.created_orders} boleta(s) criada(s)`);
       onClose();
     } catch (requestError) {
       setError(errorMessage(requestError, 'Não foi possível concluir a importação'));
@@ -134,11 +266,11 @@ const ImportB3Modal: React.FC<{ onClose: () => void; onImported: () => void }> =
   const hasChanges = preview && preview.new.length + preview.adjustments.length + closeMissing.length > 0;
 
   return (
-    <Modal title="Importar posição da B3" onClose={onClose} size="lg">
+    <Modal title="Importar da B3" onClose={onClose} size="lg">
       <Field
-        label="Relatório de posição (.xlsx)"
+        label="Relatório da B3 (.xlsx)"
         htmlFor="b3File"
-        hint="Na Área do Investidor da B3: Extratos › Posição › Baixar em Excel."
+        hint="Na Área do Investidor: Extratos › Posição ou Movimentação › Baixar em Excel. O tipo é identificado pelo arquivo."
         className="mb-4"
       >
         <input
@@ -149,6 +281,8 @@ const ImportB3Modal: React.FC<{ onClose: () => void; onImported: () => void }> =
           onChange={(event) => {
             setFile(event.target.files?.[0] || null);
             setPreview(null);
+            setMovementPreview(null);
+            setReplaceManual(false);
             setSnapshotDate('');
             setCloseMissing([]);
             setError(null);
@@ -157,6 +291,10 @@ const ImportB3Modal: React.FC<{ onClose: () => void; onImported: () => void }> =
       </Field>
 
       {error && <p role="alert" className="mb-4 p-3 rounded-lg bg-loss/10 text-loss text-sm">{error}</p>}
+
+      {movementPreview && (
+        <MovementSummary preview={movementPreview} replaceManual={replaceManual} onReplaceManualChange={setReplaceManual} />
+      )}
 
       {preview && (
         <>
@@ -260,11 +398,17 @@ const ImportB3Modal: React.FC<{ onClose: () => void; onImported: () => void }> =
 
       <div className="flex justify-end gap-2 mt-4">
         <Button onClick={onClose}>Fechar</Button>
-        {preview ? (
+        {movementPreview && (
+          <Button variant="primary" onClick={confirm} disabled={isLoading}>
+            {movementPreview.new_rows > 0 ? 'Confirmar importação' : 'Recalcular com o que já existe'}
+          </Button>
+        )}
+        {preview && (
           <Button variant="primary" onClick={confirm} disabled={isLoading || preview.positions === 0}>
             {hasChanges ? 'Confirmar importação' : 'Atualizar valores'}
           </Button>
-        ) : (
+        )}
+        {!preview && !movementPreview && (
           <Button variant="primary" onClick={() => loadPreview('')} disabled={isLoading || !file}>
             {isLoading ? 'Lendo arquivo...' : 'Ver prévia'}
           </Button>

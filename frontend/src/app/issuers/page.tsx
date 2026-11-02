@@ -21,7 +21,7 @@ const STATUS: Record<IssuerStatus, { label: string; text: string; bar: string; i
 const Stat: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
   <Card>
     <p className="text-xs text-muted mb-1">{label}</p>
-    <p className="text-xl sm:text-2xl font-semibold tabular-nums">{children}</p>
+    <p className="text-lg sm:text-xl lg:text-2xl font-semibold tabular-nums break-words">{children}</p>
   </Card>
 );
 

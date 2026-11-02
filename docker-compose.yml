@@ -25,6 +25,16 @@ services:
     depends_on:
       - postgres
 
+  market-updater:
+    container_name: market_updater
+    build: backend
+    command: python manage.py market_scheduler
+    restart: unless-stopped
+    volumes:
+      - ./backend:/code
+    depends_on:
+      - postgres
+
   frontend:
     container_name: frontend
     build: frontend

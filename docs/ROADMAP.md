@@ -35,27 +35,35 @@ Carteira pessoal de investimentos em dark mode: importar a posição da B3, ente
 - [x] Emissores: recuperados das descrições (migração `0010`), e a importação completa os que faltam
 - [x] Tela de emissores com uso do limite do FGC (`/issuers`)
 - [x] Filtro por classe na tabela de posições
+- [x] Metas de alocação por classe e por categoria dentro da classe (`/targets`), com quanto falta em reais e resumo no dashboard
+- [x] Cotações automáticas pelo COTAHIST da B3, com histórico diário por usuário e botão de atualizar (`wallet/market_update.py`)
+- [x] Categorias automáticas para ativos que não têm (`app/categories.py`)
+- [x] Importação do extrato de movimentação da B3, sem duplicar linhas entre arquivos (`wallet/movements.py`)
+- [x] Preço médio real, lucro realizado e histórico completo a partir do extrato
+- [x] Página de proventos: dividendos, rendimentos, JCP e juros por mês e por ativo (`/income`)
+- [x] Calculadora de aporte (`lib/contribution.ts`): divide o valor entre os grupos abaixo da meta, sem sugerir vendas
 
 ## Próximos passos
 
-Sem ordem obrigatória; os dois primeiros têm o maior retorno.
+Sem ordem obrigatória.
 
-- [ ] **Classificar ativos sem categoria:** FIIs e ações importados só têm categoria se ela já existir em `Asset` (ou for editada na tela). Avaliar preencher por `populate_asset` ou pelo Investidor10
 - [ ] **Agrupar emissores por conglomerado:** bancos do mesmo grupo dividem o limite do FGC, e a tela mostra cada emissor separado
 - [ ] Teto global do FGC (R$ 1 milhão por CPF a cada 4 anos) como indicador na tela de emissores
-- [ ] Metas de alocação por classe e sugestão de rebalanceamento
-- [ ] Proventos: registrar e mostrar dividendos e rendimentos
-- [ ] Importar o extrato de negociação da B3, que traz data e preço reais de compra
-- [ ] Atualização automática de cotações, substituindo o intervalo fixo em `populate_asset_price`
-- [ ] Taxa contratada de CDB/LCI/LCA, para projetar a curva entre importações
+- [ ] Calculadora de aporte por ativo: sugerir tickers e quantidades, considerando preço e lote
+- [ ] Categoria de ETF sem depender da importação: nenhuma fonte externa testada traz esse dado
+- [ ] **Vencimento de títulos antigos:** o extrato não informa vencimento, então títulos encerrados sem baixa saem do histórico na última atividade conhecida, e o patrimônio antigo fica subestimado
+- [ ] Desdobramento depois da última importação: sem o extrato atualizado, a posição fica distorcida até importar de novo
+- [ ] Recalcular o histórico ao editar boletas manuais com data passada (importações já recalculam)
+- [ ] Rendimento de renda fixa entre importações, com a taxa contratada ou uma estimativa pela taxa implícita
+- [ ] Metas por subcategoria (hoje são dois níveis: classe e categoria)
 - [ ] Indexador CDI e tipos CRI, CRA e debênture na importação
 - [ ] Rentabilidade contra CDI e Ibovespa
 - [ ] Trazer para o repositório o teste de navegador com Playwright (hoje foi um script temporário)
 
 ## Dívida técnica conhecida
 
-- [ ] `consolidate`, `consolidate_fixed_income` e `daily_consolidation` usam `User.objects.get()` e falham com mais de um usuário
-- [ ] Renda fixa importada só tem histórico nas datas de importação, então o total do gráfico fica abaixo do real se `consolidate` gerar linhas diárias entre elas
+- [ ] `populate_asset` usa endpoints da B3 que respondem 405 em parte das etapas; revisar ou remover
+- [ ] Renda fixa sem taxa fica com o valor da última importação até a próxima; `consolidate` ainda recalcula a renda variável do zero, por caminho diferente de `wallet/consolidation.py`
 - [ ] Segurança: `SECRET_KEY` no código, `DEBUG=True`, `CORS_ALLOW_ALL_ORIGINS` e views com `@csrf_exempt`
 - [ ] Autenticação: o cookie `currentUser` não é `HttpOnly` nem validado pelo middleware do frontend
 - [ ] Dependências `latest` em `frontend/package.json`; fixar versões
@@ -77,6 +85,20 @@ docker exec backend python manage.py reset_portfolio --username SEU_USUARIO     
 docker exec backend python manage.py reset_portfolio --username SEU_USUARIO --yes   # apaga boletas e histórico desse usuário
 ```
 
+## Cotações e histórico
+
+O serviço `market-updater` do `docker-compose` roda `market_scheduler`, que atualiza a cada 3 horas. O botão "Atualizar cotações" do dashboard faz o mesmo na hora. Para preencher preços antigos, use um ano inteiro de cada vez:
+
+```bash
+docker exec backend python manage.py update_market_data --year 2024 2025
+```
+
+## Fluxo de importação recomendado
+
+1. Importe o relatório de posição e o extrato de movimentação, em qualquer ordem. Sem o relatório, títulos de renda fixa não aparecem.
+2. Depois, envie extratos menores quando quiser, inclusive com períodos repetidos: as linhas já importadas são ignoradas.
+3. Envie um relatório de posição novo de tempos em tempos, para corrigir saldos e atualizar o valor da renda fixa.
+
 ## Como verificar
 
 - **Testes do backend:** rodar contra um Postgres descartável, nunca o banco de desenvolvimento:
@@ -93,4 +115,4 @@ docker exec backend python manage.py reset_portfolio --username SEU_USUARIO --ye
 
 ## Estado do trabalho
 
-Tudo o que está marcado como feito neste arquivo já está em `main`. Os ajustes locais de `docker-compose.yml` (portas e versão do Postgres) ficam fora dos commits de propósito. Commits não levam linha de coautoria.
+Tudo o que está marcado como feito neste arquivo já está em `main`. Os ajustes locais de `docker-compose.yml` (portas e versão do Postgres) ficam fora dos commits de propósito: o arquivo deve continuar aparecendo como modificado. Commits não levam linha de coautoria.

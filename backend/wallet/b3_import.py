@@ -19,7 +19,8 @@ from django.utils import timezone
 from openpyxl import load_workbook
 
 from app.models import Asset, AssetPrice
-from wallet.models import AssetConsolidatedValue, Order
+from wallet.models import AssetConsolidatedValue, Movement, Order, PositionSnapshot
+from wallet.movements import rebuild_orders
 from wallet.positions import summarize_orders
 
 MAX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
@@ -36,7 +37,7 @@ SELL = -1
 
 INDEXES = {"IPCA": "I", "PREFIXADO": "P", "SELIC": "S"}
 FIXED_INCOME_TYPES = ("CDB", "LCA", "LCI")
-BROKERS = (("NU INVESTIMENTOS", "Nu Invest"), ("XP", "XP"), ("RICO", "Rico"))
+BROKERS = (("NU INVEST", "Nu Invest"), ("EASYNVEST", "Nu Invest"), ("XP", "XP"), ("RICO", "Rico"))
 
 VARIABLE_INCOME_SHEETS = {"acoes": "AC", "bdr": "BDR", "etf": "ETF", "fundo de investimento": "FII"}
 FIXED_INCOME_SHEET = "renda fixa"
@@ -608,6 +609,10 @@ def build_plan(user, parsed, snapshot_date=None):
                 )
             )
 
+    if Movement.objects.filter(user=user).exists():
+        # O que saiu da carteira é encerrado pelo próprio recálculo, sem precisar da escolha do usuário.
+        orders_by_key = {}
+
     in_file = {(p.name, p.broker) for p in positions}
     # Linha com erro não permite concluir que a posição deixou de existir.
     with_error = {e.name for e in errors if e.name}
@@ -643,6 +648,29 @@ def build_plan(user, parsed, snapshot_date=None):
     )
 
 
+def _save_snapshot(user, plan):
+    """Guarda a foto da posição; a mesma data substitui a anterior, para reenviar o arquivo ser seguro."""
+    PositionSnapshot.objects.filter(user=user, date=plan.snapshot_date).delete()
+    PositionSnapshot.objects.bulk_create([
+        PositionSnapshot(
+            user=user,
+            date=plan.snapshot_date,
+            name=position.name,
+            broker=position.broker,
+            asset_type=position.asset_type,
+            quantity=position.quantity,
+            unit_price=position.unit_price,
+            value=position.value,
+            description=position.description,
+            maturity_date=position.maturity_date,
+            index=position.index,
+            fixed_income_type=position.fixed_income_type,
+            issuer=position.issuer,
+        )
+        for position in plan.positions
+    ])
+
+
 def _build_order(user, planned):
     position = planned.position
     return Order(
@@ -660,6 +688,7 @@ def _build_order(user, planned):
         fixed_income_type=position.fixed_income_type,
         issuer=position.issuer,
         cost_estimated=True,
+        source=Order.SOURCE_POSITION,
     )
 
 
@@ -739,6 +768,7 @@ def _close_order(user, missing, snapshot_date):
         fixed_income_type=last_order.fixed_income_type,
         issuer=last_order.issuer,
         cost_estimated=True,
+        source=Order.SOURCE_POSITION,
     )
 
 
@@ -763,9 +793,14 @@ def apply_plan(user, plan, close_missing=()):
     to_close = [missing_by_key[key] for key in close_missing]
 
     with transaction.atomic():
-        orders = [_build_order(user, planned) for planned in plan.new + plan.adjustments]
-        orders += [_close_order(user, missing, plan.snapshot_date) for missing in to_close]
-        Order.objects.bulk_create(orders)
+        _save_snapshot(user, plan)
+        if Movement.objects.filter(user=user).exists():
+            # Com histórico real, as boletas derivam dele e desta foto, sem ajustes estimados à parte.
+            orders = rebuild_orders(user)
+        else:
+            orders = [_build_order(user, planned) for planned in plan.new + plan.adjustments]
+            orders += [_close_order(user, missing, plan.snapshot_date) for missing in to_close]
+            Order.objects.bulk_create(orders)
         _backfill_issuers(user, plan.positions)
         _sync_market_data(plan.positions, plan.snapshot_date)
         _sync_consolidated_values(user, plan, {missing.name for missing in to_close})

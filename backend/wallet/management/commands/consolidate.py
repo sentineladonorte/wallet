@@ -16,13 +16,14 @@ class Command(BaseCommand):
 
   def handle(self, *args, **options):
 
-    tickers = options['tickers']
-    user = User.objects.get()
+    for user in User.objects.filter(order__isnull=False).distinct():
+      self.consolidate_user(user, options['tickers'])
 
+  def consolidate_user(self, user, tickers):
     assets = Order.objects.filter(user=user).values('name', 'asset_type').exclude(asset_type="RF").distinct()
 
     if tickers:
-      assets = Order.objects.filter(name__in=tickers).values('name', 'asset_type').distinct()
+      assets = Order.objects.filter(user=user, name__in=tickers).values('name', 'asset_type').distinct()
 
     for asset in assets:
       asset_name = asset['name']

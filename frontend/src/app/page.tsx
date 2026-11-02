@@ -1,11 +1,13 @@
 'use client'
 
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import Link from 'next/link';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import { Patrimony } from '@/components/charts/patrimony';
 import AllocationExplorer from '@/components/dashboard/allocationExplorer';
 import Insights from '@/components/dashboard/insights';
+import MarketDataStatusBar from '@/components/dashboard/marketDataStatus';
+import TargetsSummary from '@/components/dashboard/targetsSummary';
 import ClassificationModal from '@/components/modals/classification';
 import PositionsTable from '@/components/positionsTable';
 import { Button, Card, CardTitle, EmptyState, ErrorState, LoadingState, PageHeader, ProfitText } from '@/components/ui';
@@ -15,13 +17,14 @@ import {
 import { investidor10Url } from '@/lib/assets';
 import { formatSignedPercent } from '@/lib/format';
 import { useFormat } from '@/lib/privacy';
+import { Targets } from '@/lib/targets';
 import { useApi } from '@/lib/useApi';
 import { Position, PositionHistory, PositionResponse } from '@/types';
 
 const Stat: React.FC<{ label: string; children: React.ReactNode; detail?: React.ReactNode }> = ({ label, children, detail }) => (
   <Card>
     <p className="text-xs text-muted mb-1">{label}</p>
-    <p className="text-xl sm:text-2xl font-semibold tabular-nums">{children}</p>
+    <p className="text-lg sm:text-xl lg:text-2xl font-semibold tabular-nums break-words">{children}</p>
     {detail && <p className="text-xs text-muted mt-1">{detail}</p>}
   </Card>
 );
@@ -39,6 +42,13 @@ export default function Home() {
     '/position-history',
     onlyClassFiltered ? { class: classFilter.key } : undefined,
   );
+
+  const targets = useApi<Targets>('/targets');
+  const reloadHistory = history.reload;
+  const refreshAfterMarketUpdate = useCallback(() => {
+    reload();
+    reloadHistory();
+  }, [reload, reloadHistory]);
 
   if (isLoading && !data) return <LoadingState label="Carregando carteira..." />;
   if (error && !data) return <ErrorState message={error} onRetry={reload} />;
@@ -94,23 +104,28 @@ export default function Home() {
       <PageHeader
         title="Carteira"
         action={(
-          <Link href="/orders?import=1">
-            <Button><UploadFileIcon fontSize="small" /> Importar da B3</Button>
-          </Link>
+          <>
+            <MarketDataStatusBar onUpdated={refreshAfterMarketUpdate} />
+            <Link href="/orders?import=1">
+              <Button><UploadFileIcon fontSize="small" /> Importar da B3</Button>
+            </Link>
+          </>
         )}
       />
 
       <div className="space-y-4">
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <Stat label="Patrimônio">{formatCurrency(summary.value)}</Stat>
+          <Stat label="Patrimônio" detail={`${summary.assets} ativo(s)${summary.assets_without_price > 0 ? `, ${summary.assets_without_price} sem preço` : ''}`}>
+            {formatCurrency(summary.value)}
+          </Stat>
           <Stat label="Investido" detail={summary.estimated_assets > 0 ? `${summary.estimated_assets} ativo(s) com custo estimado` : undefined}>
             {formatCurrency(summary.invested)}
           </Stat>
           <Stat label="Resultado" detail={formatSignedPercent(summary.profit_pct)}>
             <ProfitText value={summary.profit}>{formatSignedCurrency(summary.profit)}</ProfitText>
           </Stat>
-          <Stat label="Ativos" detail={summary.assets_without_price > 0 ? `${summary.assets_without_price} sem preço, fora dos totais` : undefined}>
-            {summary.assets}
+          <Stat label="Proventos recebidos" detail={<>Lucro realizado: {formatSignedCurrency(summary.realized_gain)}</>}>
+            <Link href="/income" className="hover:underline">{formatCurrency(summary.income_total)}</Link>
           </Stat>
         </div>
 
@@ -127,18 +142,24 @@ export default function Home() {
           </div>
           <Card className="xl:col-span-2">
             <CardTitle>Evolução{onlyClassFiltered ? `: ${classFilter.label}` : ''}</CardTitle>
-            {history.data && history.data.labels.length > 0 ? (
+            {!history.data && history.isLoading && <LoadingState label="Carregando histórico..." />}
+            {history.data && history.data.labels.length > 0 && (
               <>
                 <Patrimony data={history.data} />
                 {history.data.labels.length === 1 && (
                   <p className="text-xs text-muted mt-2">O gráfico ganha linha a partir da próxima importação.</p>
                 )}
               </>
-            ) : (
-              <EmptyState title="Ainda sem histórico" description="O histórico é gravado a cada importação da posição." />
+            )}
+            {history.data && history.data.labels.length === 0 && (
+              <EmptyState title="Ainda sem histórico" description="O histórico é gravado a cada importação e a cada pregão." />
             )}
           </Card>
         </div>
+
+        {targets.data && (filters.length === 0 || onlyClassFiltered) && (
+          <TargetsSummary assets={assets} targets={targets.data} assetClass={onlyClassFiltered ? classFilter.key : null} />
+        )}
 
         <Insights assets={selected} />
 

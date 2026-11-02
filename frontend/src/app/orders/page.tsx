@@ -21,6 +21,7 @@ const OrdersPage: React.FC = () => {
   const [search, setSearch] = useState('');
   const [assetClass, setAssetClass] = useState('');
   const [onlyEstimated, setOnlyEstimated] = useState(false);
+  const [showEvents, setShowEvents] = useState(false);
 
   useEffect(() => {
     if (new URLSearchParams(window.location.search).has('import')) setIsImporting(true);
@@ -32,8 +33,9 @@ const OrdersPage: React.FC = () => {
       `${order.name} ${order.description ?? ''} ${order.broker}`.toLowerCase().includes(query)
       && (!assetClass || order.asset_type === assetClass)
       && (!onlyEstimated || order.cost_estimated)
+      && (showEvents || order.kind === 'trade')
     );
-  }, [orders, search, assetClass, onlyEstimated]);
+  }, [orders, search, assetClass, onlyEstimated, showEvents]);
 
   const estimatedCount = (orders ?? []).filter((order) => order.cost_estimated).length;
 
@@ -83,6 +85,10 @@ const OrdersPage: React.FC = () => {
               <label className="flex items-center gap-1.5 text-sm text-soft">
                 <input type="checkbox" checked={onlyEstimated} onChange={(event) => setOnlyEstimated(event.target.checked)} />
                 Só custo estimado
+              </label>
+              <label className="flex items-center gap-1.5 text-sm text-soft">
+                <input type="checkbox" checked={showEvents} onChange={(event) => setShowEvents(event.target.checked)} />
+                Mostrar eventos e transferências
               </label>
             </div>
             <OrdersTable orders={visible} onChanged={reload} />

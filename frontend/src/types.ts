@@ -11,6 +11,9 @@ export interface Position {
   value: number | null;
   profit: number | null;
   profit_pct: number | null;
+  income: number;
+  total_return: number | null;
+  total_return_pct: number | null;
   description: string | null;
   issuer: string | null;
   index: string | null;
@@ -27,6 +30,8 @@ export interface PositionSummary {
   assets: number;
   assets_without_price: number;
   estimated_assets: number;
+  income_total: number;
+  realized_gain: number;
 }
 
 export interface PositionResponse {
@@ -57,6 +62,23 @@ export interface Order {
   fixed_income_type: string | null;
   issuer: string | null;
   cost_estimated: boolean;
+  source: 'manual' | 'position' | 'movement';
+  kind: 'trade' | 'event' | 'transfer' | 'fraction' | 'succession' | 'reconcile';
+  note: string;
+}
+
+export interface IncomeRow {
+  date: string;
+  name: string;
+  description: string;
+  asset_class: AssetClass;
+  type: string;
+  value: number;
+}
+
+export interface IncomeResponse {
+  rows: IncomeRow[];
+  costs: Record<string, number>;
 }
 
 export interface AssetInfo {

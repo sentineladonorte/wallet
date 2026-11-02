@@ -55,6 +55,7 @@ const TickerPage: React.FC<{ params: { ticker: string } }> = ({ params }) => {
                 {asset.cost_estimated && <EstimatedBadge />}
               </Detail>
               <Detail label="Valor">{formatCurrency(asset.value)}</Detail>
+              <Detail label="Proventos">{formatCurrency(asset.income)}</Detail>
               <Detail label="Resultado">
                 <ProfitText value={asset.profit}>{formatSignedPercent(asset.profit_pct)}</ProfitText>
               </Detail>
