@@ -97,7 +97,7 @@ def _build_position(user, name, orders):
         "profit": profit,
         "profit_pct": profit / invested * 100 if profit is not None and invested else None,
         "description": order.description,
-        "issuer": order.issuer,
+        "issuer": next((o.issuer for o in orders if o.issuer), None),
         "index": INDEX_NAMES.get(order.index, order.index),
         "maturity_date": order.maturity_date,
         "brokers": _broker_volumes(orders),

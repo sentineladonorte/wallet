@@ -742,6 +742,15 @@ def _close_order(user, missing, snapshot_date):
     )
 
 
+def _backfill_issuers(user, positions):
+    """Completa o emissor de boletas gravadas sem ele; a reconciliação só olha a quantidade."""
+    for position in positions:
+        if position.issuer:
+            Order.objects.filter(
+                user=user, name=position.name, broker=position.broker, issuer__isnull=True
+            ).update(issuer=position.issuer)
+
+
 def apply_plan(user, plan, close_missing=()):
     """Grava o plano de forma atômica. `close_missing` lista as chaves de `MissingPosition` a zerar."""
     if not plan.positions:
@@ -757,6 +766,7 @@ def apply_plan(user, plan, close_missing=()):
         orders = [_build_order(user, planned) for planned in plan.new + plan.adjustments]
         orders += [_close_order(user, missing, plan.snapshot_date) for missing in to_close]
         Order.objects.bulk_create(orders)
+        _backfill_issuers(user, plan.positions)
         _sync_market_data(plan.positions, plan.snapshot_date)
         _sync_consolidated_values(user, plan, {missing.name for missing in to_close})
 

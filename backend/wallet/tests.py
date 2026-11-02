@@ -1,7 +1,9 @@
 import io
+import importlib
 from datetime import date, timedelta
 from decimal import Decimal
 
+from django.apps import apps
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
@@ -235,6 +237,26 @@ class ReconciliationTests(TestCase):
         self.assertEqual(Asset.objects.get(ticker="BOVA11").category, "Ações")
         self.assertEqual(Order.objects.get(name="CDBTEST1").issuer, "BANCO TESTE S/A")
         self.assertEqual(Order.objects.get(name="TESOURO IPCA+ 2099").issuer, "Tesouro Nacional")
+
+    def test_reimport_fills_issuer_of_orders_saved_without_it(self):
+        sheets = {"Renda Fixa": [RF_HEADER, fixed_income()], "Tesouro Direto": [TD_HEADER, treasury()]}
+        self.run_import(sheets)
+        Order.objects.filter(user=self.user).update(issuer=None)
+
+        plan = self.run_import(sheets)
+
+        self.assertEqual(plan.new + plan.adjustments, [])
+        self.assertEqual(Order.objects.get(name="CDBTEST1").issuer, "BANCO TESTE S/A")
+        self.assertEqual(Order.objects.get(name="TESOURO IPCA+ 2099").issuer, "Tesouro Nacional")
+
+    def test_reimport_keeps_issuer_already_set(self):
+        sheets = {"Renda Fixa": [RF_HEADER, fixed_income()]}
+        self.run_import(sheets)
+        Order.objects.filter(user=self.user).update(issuer="EDITADO PELO USUARIO")
+
+        self.run_import(sheets)
+
+        self.assertEqual(Order.objects.get(name="CDBTEST1").issuer, "EDITADO PELO USUARIO")
 
     def test_first_import_creates_market_data_and_consolidated_value(self):
         self.run_import({"Acoes": [STOCK_HEADER, stock()], "Renda Fixa": [RF_HEADER, fixed_income()]})
@@ -542,6 +564,12 @@ class PositionViewTests(TestCase):
             rows[1]["brokers"], [{"broker": "Nu Invest", "volume": 10.0}, {"broker": "XP", "volume": 5.0}]
         )
 
+    def test_issuer_ignores_orders_without_it(self):
+        self.fixed_income_order(date=date(2026, 1, 1))
+        self.fixed_income_order(date=date(2026, 2, 1), issuer="BANCO TESTE", volume=Decimal(1))
+
+        self.assertEqual(self.position()["assets"][0]["issuer"], "BANCO TESTE")
+
     def test_class_filter_works_for_new_classes(self):
         AssetPrice.objects.create(ticker="TEST34", date=SNAPSHOT, close=10.0)
         self.create_order(name="TEST34", asset_type="BDR")
@@ -623,6 +651,49 @@ class OrdersViewTests(TestCase):
 
         self.assertTrue(self.order.cost_estimated)
         self.assertEqual(self.order.broker, "XP")
+
+
+class BackfillIssuerMigrationTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("investidor", password="senha")
+
+    def create_order(self, name, description, fixed_income_type="CDB", issuer=None):
+        return Order.objects.create(
+            user=self.user, name=name, broker="Nu Invest", asset_type="RF", order_type=1, date=SNAPSHOT,
+            price=Decimal(1), volume=Decimal(1), description=description, fixed_income_type=fixed_income_type,
+            issuer=issuer,
+        )
+
+    def backfill(self):
+        migration = importlib.import_module("wallet.migrations.0010_backfill_order_issuer")
+        migration.backfill_issuers(apps, None)
+
+    def issuer_of(self, name):
+        return Order.objects.get(name=name).issuer
+
+    def test_reads_issuer_from_imported_description(self):
+        self.create_order("A", "CDB - BANCO BMG S/A - venc. 10/02/2028")
+        self.create_order("B", "CDB - PICPAY BANK - BANCO MULTIPLO S.A - venc. 14/02/2029")
+        self.create_order("C", "LCA - BANCO X (EMISSOR REAL) - venc. 14/02/2029", "LCA")
+        self.create_order("D", "Tesouro IPCA+ 2029", "TD")
+
+        self.backfill()
+
+        self.assertEqual(self.issuer_of("A"), "BANCO BMG S/A")
+        self.assertEqual(self.issuer_of("B"), "PICPAY BANK - BANCO MULTIPLO S.A")
+        self.assertEqual(self.issuer_of("C"), "EMISSOR REAL")
+        self.assertEqual(self.issuer_of("D"), "Tesouro Nacional")
+
+    def test_leaves_manual_and_filled_orders_untouched(self):
+        self.create_order("MANUAL", "comprado no banco")
+        self.create_order("VAZIA", None)
+        self.create_order("PREENCHIDA", "CDB - BANCO BMG S/A - venc. 10/02/2028", issuer="OUTRO")
+
+        self.backfill()
+
+        self.assertIsNone(self.issuer_of("MANUAL"))
+        self.assertIsNone(self.issuer_of("VAZIA"))
+        self.assertEqual(self.issuer_of("PREENCHIDA"), "OUTRO")
 
 
 class ResetPortfolioTests(TestCase):
