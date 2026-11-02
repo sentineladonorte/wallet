@@ -8,7 +8,8 @@ import Link from 'next/link';
 import AssetLink from '@/components/assetLink';
 import { Button, EstimatedBadge, IconButton, ProfitText, inputClass } from '@/components/ui';
 import { CLASS_COLORS, classLabel } from '@/lib/assets';
-import { formatCurrency, formatPercent, formatQuantity, formatSignedPercent } from '@/lib/format';
+import { formatPercent, formatSignedPercent } from '@/lib/format';
+import { useFormat } from '@/lib/privacy';
 import { Position } from '@/types';
 
 type SortKey = 'name' | 'asset_class' | 'category' | 'volume' | 'average' | 'price' | 'value' | 'profit_pct';
@@ -65,20 +66,31 @@ const PositionsTable: React.FC<{
   total: number;
   onEditClassification: (asset: Position) => void;
 }> = ({ assets, total, onEditClassification }) => {
+  const { formatCurrency, formatQuantity } = useFormat();
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<{ key: SortKey; ascending: boolean }>({ key: 'value', ascending: false });
+  const [classFilter, setClassFilter] = useState('');
+
+  const classes = useMemo(() => {
+    const counts: Record<string, number> = {};
+    assets.forEach((asset) => { counts[asset.asset_class] = (counts[asset.asset_class] || 0) + 1; });
+    return Object.keys(counts).sort((a, b) => classLabel(a).localeCompare(classLabel(b), 'pt-BR')).map((key) => ({ key, count: counts[key] }));
+  }, [assets]);
+  // A seleção da pizza pode tirar da lista a classe escolhida aqui; nesse caso, o filtro deixa de valer.
+  const activeClass = classes.some(({ key }) => key === classFilter) ? classFilter : '';
 
   const visible = useMemo(() => {
     const query = search.trim().toLowerCase();
     const matches = assets.filter((asset) =>
       `${asset.name} ${asset.description ?? ''} ${asset.category ?? ''}`.toLowerCase().includes(query)
+      && (!activeClass || asset.asset_class === activeClass)
     );
     return matches.sort((a, b) => {
       const result = compare(a, b, sort.key);
       if (Math.abs(result) === Infinity) return result;
       return sort.ascending ? result : -result;
     });
-  }, [assets, search, sort]);
+  }, [assets, search, sort, activeClass]);
 
   const toggleSort = (key: SortKey) => {
     setSort((current) => ({
@@ -102,6 +114,25 @@ const PositionsTable: React.FC<{
           <DownloadIcon fontSize="small" /> Exportar CSV
         </Button>
       </div>
+      {classes.length > 1 && (
+        <div role="group" aria-label="Filtrar por classe" className="flex flex-wrap gap-1.5 mb-3">
+          {[{ key: '', count: assets.length }, ...classes].map(({ key, count }) => (
+            <button
+              key={key || 'all'}
+              type="button"
+              aria-pressed={activeClass === key}
+              onClick={() => setClassFilter(key)}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs transition ${
+                activeClass === key ? 'bg-raised border-muted text-ink' : 'border-line text-muted hover:text-ink'
+              }`}
+            >
+              {key && <span aria-hidden className="w-2 h-2 rounded-sm" style={{ backgroundColor: CLASS_COLORS[key] }} />}
+              {key ? classLabel(key) : 'Todas'}
+              <span className="tabular-nums text-muted">{count}</span>
+            </button>
+          ))}
+        </div>
+      )}
       <div className="overflow-auto max-h-[640px]">
         <table className="w-full text-sm">
           <thead>
