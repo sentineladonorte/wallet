@@ -2,6 +2,7 @@
 
 import React, { useMemo } from 'react';
 import { Card, CardTitle, ErrorState, LoadingState, PageHeader } from '@/components/ui';
+import ContributionCalculator from '@/components/targets/contributionCalculator';
 import TargetsTable from '@/components/targets/targetsTable';
 import { CLASS_COLORS, NO_CATEGORY, classLabel } from '@/lib/assets';
 import { useFormat } from '@/lib/privacy';
@@ -49,6 +50,8 @@ const TargetsPage: React.FC = () => {
       />
 
       <div className="space-y-4">
+        <ContributionCalculator assets={assets} targets={targets} />
+
         <Card>
           <CardTitle>Classes na carteira</CardTitle>
           <TargetsTable
