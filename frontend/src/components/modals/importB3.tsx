@@ -1,0 +1,274 @@
+'use client'
+
+import React, { useState } from 'react';
+import { Button, Field, Modal, inputClass } from '@/components/ui';
+import { useToast } from '@/components/ui/toast';
+import { formatCurrency, formatDate, formatQuantity } from '@/lib/format';
+import { errorMessage } from '@/lib/useApi';
+import api from '@/services/api';
+
+interface PlannedOrder {
+  name: string;
+  broker: string;
+  description: string | null;
+  order_type: number;
+  date: string;
+  price: number;
+  volume: number;
+}
+
+interface MissingPosition {
+  key: string;
+  name: string;
+  broker: string;
+  volume: number;
+  price: number | null;
+  possible_duplicate: boolean;
+}
+
+interface Preview {
+  snapshot_date: string;
+  total_value: number;
+  positions: number;
+  new: PlannedOrder[];
+  adjustments: PlannedOrder[];
+  unchanged: { name: string }[];
+  missing: MissingPosition[];
+  errors: { sheet: string; row: number; name: string | null; message: string }[];
+  sheets: { sheet: string; rows: number; total: number; footer_total: number | null; matches_footer: boolean | null }[];
+}
+
+const PlannedOrders: React.FC<{ title: string; orders: PlannedOrder[] }> = ({ title, orders }) => {
+  if (orders.length === 0) return null;
+
+  return (
+    <details className="mb-4 border border-line rounded-lg" open={orders.length <= 10}>
+      <summary className="cursor-pointer px-3 py-2 text-sm font-medium">{title} ({orders.length})</summary>
+      <div className="overflow-x-auto px-3 pb-2">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-xs text-muted border-b border-line">
+              <th className="py-1.5 pr-2 text-left font-medium">Ativo</th>
+              <th className="py-1.5 px-2 text-left font-medium">Operação</th>
+              <th className="py-1.5 px-2 text-left font-medium">Data</th>
+              <th className="py-1.5 px-2 text-right font-medium">Qtd.</th>
+              <th className="py-1.5 pl-2 text-right font-medium whitespace-nowrap">Preço estimado</th>
+            </tr>
+          </thead>
+          <tbody>
+            {orders.map((order) => (
+              <tr key={`${order.name}|${order.broker}`} className="border-b border-line/50">
+                <td className="py-1.5 pr-2">
+                  {order.name}
+                  <div className="text-xs text-muted">{order.description}</div>
+                </td>
+                <td className="py-1.5 px-2">{order.order_type === 1 ? 'Compra' : 'Venda'}</td>
+                <td className="py-1.5 px-2 tabular-nums">{formatDate(order.date)}</td>
+                <td className="py-1.5 px-2 text-right tabular-nums">{formatQuantity(order.volume)}</td>
+                <td className="py-1.5 pl-2 text-right tabular-nums">{formatCurrency(order.price)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  );
+};
+
+const ImportB3Modal: React.FC<{ onClose: () => void; onImported: () => void }> = ({ onClose, onImported }) => {
+  const toast = useToast();
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [snapshotDate, setSnapshotDate] = useState('');
+  const [closeMissing, setCloseMissing] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+
+  const buildForm = (date: string) => {
+    const form = new FormData();
+    form.append('file', file as File);
+    if (date) form.append('snapshot_date', date);
+    return form;
+  };
+
+  const loadPreview = async (date: string) => {
+    if (!file) return;
+    setIsLoading(true);
+    setError(null);
+    try {
+      const response = await api.post<Preview>('/orders/import/preview', buildForm(date));
+      setPreview(response.data);
+      setSnapshotDate(response.data.snapshot_date);
+      setCloseMissing((selected) => selected.filter((key) => response.data.missing.some((item) => item.key === key)));
+    } catch (requestError) {
+      setPreview(null);
+      setError(errorMessage(requestError, 'Não foi possível ler o arquivo'));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const confirm = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const form = buildForm(snapshotDate);
+      closeMissing.forEach((key) => form.append('close_missing', key));
+      const response = await api.post<{ created_orders: number }>('/orders/import/confirm', form);
+      onImported();
+      toast(`Importação concluída: ${response.data.created_orders} boleta(s) criada(s)`);
+      onClose();
+    } catch (requestError) {
+      setError(errorMessage(requestError, 'Não foi possível concluir a importação'));
+      setIsLoading(false);
+    }
+  };
+
+  const toggleMissing = (key: string) => {
+    setCloseMissing((selected) => (selected.includes(key) ? selected.filter((item) => item !== key) : [...selected, key]));
+  };
+
+  const hasChanges = preview && preview.new.length + preview.adjustments.length + closeMissing.length > 0;
+
+  return (
+    <Modal title="Importar posição da B3" onClose={onClose} size="lg">
+      <Field
+        label="Relatório de posição (.xlsx)"
+        htmlFor="b3File"
+        hint="Na Área do Investidor da B3: Extratos › Posição › Baixar em Excel."
+        className="mb-4"
+      >
+        <input
+          type="file"
+          id="b3File"
+          accept=".xlsx"
+          className="block w-full text-sm text-soft file:mr-3 file:px-3 file:py-2 file:rounded-lg file:border file:border-line file:bg-raised file:text-ink file:text-sm"
+          onChange={(event) => {
+            setFile(event.target.files?.[0] || null);
+            setPreview(null);
+            setSnapshotDate('');
+            setCloseMissing([]);
+            setError(null);
+          }}
+        />
+      </Field>
+
+      {error && <p role="alert" className="mb-4 p-3 rounded-lg bg-loss/10 text-loss text-sm">{error}</p>}
+
+      {preview && (
+        <>
+          <p className="mb-4 p-3 rounded-lg bg-warn/10 text-warn text-sm">
+            O relatório não informa data nem preço de compra. Os custos são estimados e ficam marcados nas boletas
+            para você corrigir depois. O histórico começa na data da posição.
+          </p>
+
+          <div className="flex flex-wrap gap-4 items-end mb-4">
+            <Field label="Data da posição" htmlFor="snapshotDate">
+              <input
+                type="date"
+                id="snapshotDate"
+                className={inputClass}
+                value={snapshotDate}
+                onChange={(event) => setSnapshotDate(event.target.value)}
+                onBlur={() => { if (snapshotDate !== preview.snapshot_date) loadPreview(snapshotDate); }}
+              />
+            </Field>
+            <dl className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
+              <div><dt className="text-xs text-muted">Total no arquivo</dt><dd className="font-semibold tabular-nums">{formatCurrency(preview.total_value)}</dd></div>
+              <div><dt className="text-xs text-muted">Novas</dt><dd className="font-semibold tabular-nums">{preview.new.length}</dd></div>
+              <div><dt className="text-xs text-muted">Ajustes</dt><dd className="font-semibold tabular-nums">{preview.adjustments.length}</dd></div>
+              <div><dt className="text-xs text-muted">Sem alteração</dt><dd className="font-semibold tabular-nums">{preview.unchanged.length}</dd></div>
+            </dl>
+          </div>
+
+          <details className="mb-4 border border-line rounded-lg" open={preview.sheets.some((sheet) => sheet.matches_footer === false)}>
+            <summary className="cursor-pointer px-3 py-2 text-sm font-medium">Conferência por aba ({preview.sheets.length})</summary>
+            <div className="overflow-x-auto px-3 pb-2">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs text-muted border-b border-line">
+                    <th className="py-1.5 pr-2 text-left font-medium">Aba</th>
+                    <th className="py-1.5 px-2 text-right font-medium">Posições</th>
+                    <th className="py-1.5 px-2 text-right font-medium">Soma lida</th>
+                    <th className="py-1.5 px-2 text-right font-medium">Total do arquivo</th>
+                    <th className="py-1.5 pl-2 text-right font-medium">Confere</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {preview.sheets.map((sheet) => (
+                    <tr key={sheet.sheet} className="border-b border-line/50">
+                      <td className="py-1.5 pr-2">{sheet.sheet}</td>
+                      <td className="py-1.5 px-2 text-right tabular-nums">{sheet.rows}</td>
+                      <td className="py-1.5 px-2 text-right tabular-nums">{formatCurrency(sheet.total)}</td>
+                      <td className="py-1.5 px-2 text-right tabular-nums">{formatCurrency(sheet.footer_total)}</td>
+                      <td className={`py-1.5 pl-2 text-right ${sheet.matches_footer === false ? 'text-loss' : 'text-soft'}`}>
+                        {sheet.matches_footer === false ? 'Não' : 'Sim'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </details>
+
+          {preview.errors.length > 0 && (
+            <section className="mb-4 p-3 rounded-lg bg-loss/10">
+              <h3 className="text-sm font-medium text-loss mb-1">Linhas que não serão importadas ({preview.errors.length})</h3>
+              <ul className="text-sm list-disc pl-5">
+                {preview.errors.map((rowError) => (
+                  <li key={`${rowError.sheet}-${rowError.row}-${rowError.name}`}>
+                    {rowError.sheet}, linha {rowError.row}{rowError.name ? ` (${rowError.name})` : ''}: {rowError.message}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {preview.missing.length > 0 && (
+            <section className="mb-4 border border-line rounded-lg p-3">
+              <h3 className="text-sm font-medium mb-1">Na carteira, mas fora do arquivo ({preview.missing.length})</h3>
+              <p className="text-xs text-muted mb-2">
+                Nada é zerado sem sua escolha. Marque o que deve receber uma boleta de venda pelo último preço conhecido.
+              </p>
+              <ul className="text-sm space-y-1">
+                {preview.missing.map((item) => (
+                  <li key={item.key}>
+                    <label className="flex items-start gap-2">
+                      <input type="checkbox" className="mt-1" checked={closeMissing.includes(item.key)} onChange={() => toggleMissing(item.key)} />
+                      <span>
+                        {item.name} ({item.broker}): {formatQuantity(item.volume)} a {formatCurrency(item.price)}
+                        {item.possible_duplicate && (
+                          <span className="block text-xs text-warn">
+                            Renda fixa: se este título estiver no arquivo com outro código, fica duplicado até ser zerado aqui.
+                          </span>
+                        )}
+                      </span>
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          <PlannedOrders title="Novas posições" orders={preview.new} />
+          <PlannedOrders title="Ajustes" orders={preview.adjustments} />
+        </>
+      )}
+
+      <div className="flex justify-end gap-2 mt-4">
+        <Button onClick={onClose}>Fechar</Button>
+        {preview ? (
+          <Button variant="primary" onClick={confirm} disabled={isLoading || preview.positions === 0}>
+            {hasChanges ? 'Confirmar importação' : 'Atualizar valores'}
+          </Button>
+        ) : (
+          <Button variant="primary" onClick={() => loadPreview('')} disabled={isLoading || !file}>
+            {isLoading ? 'Lendo arquivo...' : 'Ver prévia'}
+          </Button>
+        )}
+      </div>
+    </Modal>
+  );
+};
+
+export default ImportB3Modal;
