@@ -24,3 +24,22 @@ class AssetPrice(models.Model):
     constraints = [
         models.UniqueConstraint(fields=['ticker', 'date'], name='unique_ticker_date')
     ]
+
+
+class MarketDataUpdate(models.Model):
+    """Registro de cada atualização de cotações, categorias e histórico."""
+
+    RUNNING = "running"
+    SUCCESS = "success"
+    ERROR = "error"
+
+    started_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=8, default=RUNNING)
+    # Último pregão baixado da B3. Não vem de AssetPrice, que também recebe preços das importações.
+    last_session = models.DateField(null=True, blank=True)
+    prices_saved = models.IntegerField(default=0)
+    categories_filled = models.IntegerField(default=0)
+    history_rows = models.IntegerField(default=0)
+    message = models.TextField(blank=True, default="")
+
