@@ -1,3 +1,4 @@
+from collections import defaultdict
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from django.http import JsonResponse
@@ -9,13 +10,23 @@ from wallet.b3_import import (
     parse_position_file,
     plan_to_dict,
 )
-from wallet.models import AllocationTarget, AssetConsolidatedValue, Order
-from wallet.positions import summarize_orders
-import pandas as pd
+from wallet.market_update import start_history_rebuild, start_update_in_background, update_status
+from wallet.models import AllocationTarget, AssetConsolidatedValue, Movement, Order
+from wallet.movements import (
+    MovementFileError,
+    import_movements,
+    income_by_name,
+    income_rows,
+    infer_asset_type,
+    is_movement_file,
+    parse_movements_file,
+    preview_movements,
+)
+from wallet.positions import realized_gain, summarize_orders
 from django.views.decorators.csrf import csrf_exempt
 import json
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Q, Sum
 from django.utils import timezone
 
 
@@ -27,6 +38,9 @@ FIXED_INCOME_NAMES = {
     "TD": "Tesouro Direto",
 }
 NOT_AUTHENTICATED = {"message": "Usuário não autenticado"}
+IMPORTED_ORDER_MESSAGE = (
+    "Esta boleta vem do extrato de movimentação da B3 e seria recriada na próxima importação."
+)
 
 MAX_IMPORT_FILE_BYTES = 1024 * 1024
 # INT é a classe das boletas antigas, anterior a BDR e ETF.
@@ -72,7 +86,7 @@ def _broker_volumes(orders):
     ]
 
 
-def _build_position(user, name, orders):
+def _build_position(user, name, orders, income=0.0):
     quantity, invested = summarize_orders(orders)
     if quantity <= 0:
         return None
@@ -100,6 +114,9 @@ def _build_position(user, name, orders):
         "value": value,
         "profit": profit,
         "profit_pct": profit / invested * 100 if profit is not None and invested else None,
+        "income": income,
+        "total_return": profit + income if profit is not None else None,
+        "total_return_pct": (profit + income) / invested * 100 if profit is not None and invested else None,
         "description": order.description,
         "issuer": next((o.issuer for o in orders if o.issuer), None),
         "index": INDEX_NAMES.get(order.index, order.index),
@@ -109,7 +126,7 @@ def _build_position(user, name, orders):
     }
 
 
-def _summarize_positions(assets):
+def _summarize_positions(assets, income_total, realized):
     priced = [asset for asset in assets if asset["value"] is not None]
     value = sum(asset["value"] for asset in priced)
     invested = sum(asset["cost"] for asset in priced)
@@ -121,6 +138,8 @@ def _summarize_positions(assets):
         "assets": len(assets),
         "assets_without_price": len(assets) - len(priced),
         "estimated_assets": sum(1 for asset in assets if asset["cost_estimated"]),
+        "income_total": income_total,
+        "realized_gain": realized,
     }
 
 
@@ -142,14 +161,24 @@ def position(request):
     for order in orders:
         orders_by_name.setdefault(order.name, []).append(order)
 
+    income = income_by_name(user)
     assets = [
-        _build_position(user, name, asset_orders)
+        _build_position(user, name, asset_orders, float(income.get(name, 0)))
         for name, asset_orders in orders_by_name.items()
     ]
     assets = [asset for asset in assets if asset]
     assets.sort(key=lambda asset: asset["value"] or 0, reverse=True)
 
-    return JsonResponse({"assets": assets, "summary": _summarize_positions(assets)})
+    # O lucro realizado e os proventos incluem ativos que já saíram da carteira.
+    all_orders = defaultdict(list)
+    for order in Order.objects.filter(user=user):
+        all_orders[order.name].append(order)
+    realized = sum((realized_gain(items) for items in all_orders.values()), Decimal(0))
+    income_total = float(sum(income.values(), Decimal(0)))
+
+    return JsonResponse(
+        {"assets": assets, "summary": _summarize_positions(assets, income_total, float(realized))}
+    )
 
 
 def _changes_estimated_cost(order, data):
@@ -180,24 +209,18 @@ def position_history(request):
             asset_type=asset_type.upper()
         )
 
-    if not asset_consolidated_values.exists():
-        return JsonResponse({"labels": [], "values": [], "invested": []})
-
-    df = pd.DataFrame(asset_consolidated_values.values())
-    df = df[["date", "value", "invested", "volume"]]
-    df["date"] = pd.to_datetime(df["date"])
-
-    grouped = df.groupby("date").agg({"value": "sum", "invested": "sum"}).reset_index()
-
-    grouped["date"] = grouped["date"].dt.strftime("%d/%m/%Y")
-    grouped["value"] = grouped["value"].astype(float)
-    grouped["invested"] = grouped["invested"].astype(float)
+    # Agregado no banco: o histórico completo de uma carteira passa de 100 mil linhas.
+    grouped = (
+        asset_consolidated_values.values("date")
+        .annotate(total_value=Sum("value"), total_invested=Sum("invested"))
+        .order_by("date")
+    )
 
     return JsonResponse(
         {
-            "labels": grouped["date"].values.tolist(),
-            "values": grouped["value"].values.tolist(),
-            "invested": grouped["invested"].values.tolist(),
+            "labels": [row["date"].strftime("%d/%m/%Y") for row in grouped],
+            "values": [float(row["total_value"]) for row in grouped],
+            "invested": [float(row["total_invested"]) for row in grouped],
         },
         safe=False,
     )
@@ -221,6 +244,9 @@ def _order_to_dict(order):
         "fixed_income_type": order.fixed_income_type,
         "issuer": order.issuer,
         "cost_estimated": order.cost_estimated,
+        "source": order.source,
+        "kind": order.kind,
+        "note": order.note,
     }
 
 
@@ -329,8 +355,21 @@ def targets(request):
     return JsonResponse(_targets_to_dict(user))
 
 
-def _read_import_request(request):
-    """Retorna (arquivo já lido, data informada ou None), lançando ImportFileError se inválidos."""
+@csrf_exempt
+def market_data(request):
+    if not request.user.is_authenticated:
+        return JsonResponse(NOT_AUTHENTICATED, status=401)
+    if request.method == "GET":
+        return JsonResponse(update_status())
+    if request.method != "POST":
+        return JsonResponse({"message": "Método não permitido"}, status=400)
+
+    if not update_status()["running"]:
+        start_update_in_background()
+    return JsonResponse({**update_status(), "running": True}, status=202)
+
+
+def _uploaded_file(request):
     file = request.FILES.get("file")
     if not file:
         raise ImportFileError("Envie o arquivo .xlsx exportado pela B3.")
@@ -338,7 +377,11 @@ def _read_import_request(request):
         raise ImportFileError("O arquivo precisa ter a extensão .xlsx.")
     if file.size > MAX_IMPORT_FILE_BYTES:
         raise ImportFileError("O arquivo precisa ter no máximo 1 MB.")
+    return file
 
+
+def _read_position_request(request, file):
+    """Retorna (arquivo já lido, data informada ou None), lançando ImportFileError se inválidos."""
     snapshot_date = None
     raw_date = request.POST.get("snapshot_date")
     if raw_date:
@@ -361,11 +404,15 @@ def import_preview(request):
         return JsonResponse({"message": "Método não permitido"}, status=400)
 
     try:
-        parsed, snapshot_date = _read_import_request(request)
-    except ImportFileError as error:
+        file = _uploaded_file(request)
+        if is_movement_file(file):
+            parsed, errors = parse_movements_file(file)
+            return JsonResponse(preview_movements(user, parsed, errors))
+        parsed, snapshot_date = _read_position_request(request, file)
+    except (ImportFileError, MovementFileError) as error:
         return JsonResponse({"message": str(error)}, status=400)
 
-    return JsonResponse(plan_to_dict(build_plan(user, parsed, snapshot_date)))
+    return JsonResponse({"file_type": "position", **plan_to_dict(build_plan(user, parsed, snapshot_date))})
 
 
 @csrf_exempt
@@ -377,13 +424,53 @@ def import_confirm(request):
         return JsonResponse({"message": "Método não permitido"}, status=400)
 
     try:
-        parsed, snapshot_date = _read_import_request(request)
+        file = _uploaded_file(request)
+        if is_movement_file(file):
+            parsed, _ = parse_movements_file(file)
+            new_rows, created = import_movements(user, parsed, request.POST.get("replace_manual") == "true")
+            start_history_rebuild(user)
+            return JsonResponse({"file_type": "movements", "new_rows": new_rows, "created_orders": created}, status=201)
+
+        parsed, snapshot_date = _read_position_request(request, file)
         plan = build_plan(user, parsed, snapshot_date)
         created = apply_plan(user, plan, request.POST.getlist("close_missing"))
-    except ImportFileError as error:
+        if Movement.objects.filter(user=user).exists():
+            start_history_rebuild(user)
+    except (ImportFileError, MovementFileError) as error:
         return JsonResponse({"message": str(error)}, status=400)
 
-    return JsonResponse({"created_orders": created}, status=201)
+    return JsonResponse({"file_type": "position", "created_orders": created}, status=201)
+
+
+def income(request):
+    user = request.user
+    if not user.is_authenticated:
+        return JsonResponse(NOT_AUTHENTICATED, status=401)
+
+    classes = dict(Order.objects.filter(user=user).values_list("name", "asset_type"))
+    costs = {}
+    orders_by_name = defaultdict(list)
+    for order in Order.objects.filter(user=user):
+        orders_by_name[order.name].append(order)
+    for name, name_orders in orders_by_name.items():
+        costs[name] = float(summarize_orders(name_orders)[1])
+
+    return JsonResponse(
+        {
+            "rows": [
+                {
+                    "date": movement.date,
+                    "name": movement.name,
+                    "description": movement.product,
+                    "asset_class": classes.get(movement.name) or infer_asset_type(movement.name, movement.product),
+                    "type": label,
+                    "value": float(value),
+                }
+                for movement, label, value in income_rows(user)
+            ],
+            "costs": costs,
+        }
+    )
 
 
 @csrf_exempt  # Use this decorator to disable CSRF protection for demonstration purposes.
@@ -437,6 +524,8 @@ def order(request, id=None):
     elif request.method == "DELETE":
         try:
             order = Order.objects.get(user=user, id=id)
+            if order.source == Order.SOURCE_MOVEMENT:
+                return JsonResponse({"message": IMPORTED_ORDER_MESSAGE}, status=400)
 
             order.delete()
             return JsonResponse({"message": "Boleta deletada"}, status=204)
@@ -462,6 +551,8 @@ def order(request, id=None):
         try:
             data = json.loads(request.body.decode("utf-8"))
             order = Order.objects.get(user=user, id=id)
+            if order.source == Order.SOURCE_MOVEMENT:
+                return JsonResponse({"message": IMPORTED_ORDER_MESSAGE}, status=400)
 
             if _changes_estimated_cost(order, data):
                 order.cost_estimated = False
