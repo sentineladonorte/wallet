@@ -2,12 +2,14 @@ import './globals.css'
 import type { Metadata } from 'next'
 import { Inter } from 'next/font/google'
 import Navbar from "../components/navbar";
+import { ToastProvider } from '@/components/ui/toast';
 import { AuthProvider } from '@/services/authContext';
+
 const inter = Inter({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
   title: 'Wallet',
-  description: 'Secure your future',
+  description: 'Sua carteira de investimentos',
 }
 
 export default function RootLayout({
@@ -19,8 +21,10 @@ export default function RootLayout({
     <html lang="pt-BR">
       <body className={inter.className}>
         <AuthProvider>
-          <Navbar />
-          {children}
+          <ToastProvider>
+            <Navbar />
+            <main className="max-w-7xl mx-auto px-4 py-6">{children}</main>
+          </ToastProvider>
         </AuthProvider>
       </body>
     </html>
