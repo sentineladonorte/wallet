@@ -117,6 +117,8 @@ Não há FK entre `wallet` e `app`: a ligação é por string, com `Order.name` 
 
 `AllocationTarget` guarda dois níveis: a classe na carteira (`category` vazia) e a categoria dentro da classe, com percentual sobre o total da classe. `PUT /api/targets` substitui um nível inteiro de uma vez e recusa soma acima de 100%; abaixo disso é permitido. A comparação com a posição é feita no cliente, em `lib/targets.ts`. A categoria é comparada pelo texto exato de `Asset.category`, ou do indexador na renda fixa.
 
+A calculadora de aporte (`lib/contribution.ts`) usa as metas salvas, calcula a meta sobre o total depois do aporte e divide o valor na proporção do que falta a cada grupo, primeiro entre classes e depois dentro de cada classe. Ela trabalha em centavos para a soma fechar exatamente no aporte.
+
 ### Autenticação
 
 - A autenticação real é a sessão do Django. O `api.ts` usa `withCredentials: true`.
