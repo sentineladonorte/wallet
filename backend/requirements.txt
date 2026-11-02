@@ -18,3 +18,4 @@ typing_extensions==4.8.0
 tzdata==2023.3
 urllib3==2.0.6
 djangorestframework==3.15.2
+openpyxl==3.1.5
