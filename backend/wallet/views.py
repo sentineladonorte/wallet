@@ -10,6 +10,8 @@ from wallet.b3_import import (
     parse_position_file,
     plan_to_dict,
 )
+from wallet.fixed_income import ImpliedRates, grow
+from wallet.performance import performance_series
 from wallet.market_update import start_history_rebuild, start_update_in_background, update_status
 from wallet.models import AllocationTarget, AssetConsolidatedValue, Movement, Order
 from wallet.movements import (
@@ -58,19 +60,35 @@ def _variable_income_details(name):
     }
 
 
-def _fixed_income_details(user, name, order, quantity):
+def _fixed_income_details(user, name, orders, quantity, invested, rates):
+    order = _with_maturity(orders)
     latest_value = (
-        AssetConsolidatedValue.objects.filter(user=user, name=name)
+        AssetConsolidatedValue.objects.filter(user=user, name=name, volume__gt=0)
         .order_by("date")
         .last()
     )
+    # Título comprado depois do último cálculo do histórico ainda não tem linha: vale o custo.
+    value = float(latest_value.value) if latest_value else invested
+    as_of = latest_value.date if latest_value else None
+    rate = rates.rate_for(name, orders)
+    days_to_maturity = (order.maturity_date - timezone.now().date()).days if order.maturity_date else None
     return {
         "category": INDEX_NAMES.get(order.index, order.index),
         "sub_category": FIXED_INCOME_NAMES.get(
             order.fixed_income_type, order.fixed_income_type
         ),
-        "price": float(latest_value.value) / quantity if latest_value else None,
+        "price": value / quantity if quantity else None,
+        "estimated_rate": rate * 100,
+        "maturity_value": float(grow(Decimal(str(value)), rate, max(days_to_maturity, 0)))
+        if days_to_maturity is not None
+        else None,
+        "value_estimated": rates.is_estimated(name, as_of),
     }
+
+
+def _with_maturity(orders):
+    """Boletas de um mesmo título podem não trazer os dados dele; usa a mais completa."""
+    return next((order for order in orders if order.maturity_date), orders[0])
 
 
 def _broker_volumes(orders):
@@ -86,16 +104,16 @@ def _broker_volumes(orders):
     ]
 
 
-def _build_position(user, name, orders, income=0.0):
+def _build_position(user, name, orders, rates, income=0.0):
     quantity, invested = summarize_orders(orders)
     if quantity <= 0:
         return None
 
     quantity = float(quantity)
     invested = float(invested)
-    order = orders[0]
+    order = _with_maturity(orders)
     if order.asset_type == "RF":
-        details = _fixed_income_details(user, name, order, quantity)
+        details = _fixed_income_details(user, name, orders, quantity, invested, rates)
     else:
         details = _variable_income_details(name)
 
@@ -122,11 +140,14 @@ def _build_position(user, name, orders, income=0.0):
         "index": INDEX_NAMES.get(order.index, order.index),
         "maturity_date": order.maturity_date,
         "brokers": _broker_volumes(orders),
+        "estimated_rate": details.get("estimated_rate"),
+        "maturity_value": details.get("maturity_value"),
+        "value_estimated": details.get("value_estimated", False),
         "cost_estimated": any(o.cost_estimated for o in orders),
     }
 
 
-def _summarize_positions(assets, income_total, realized):
+def _summarize_positions(assets, income_total, realized, fixed_income_as_of):
     priced = [asset for asset in assets if asset["value"] is not None]
     value = sum(asset["value"] for asset in priced)
     invested = sum(asset["cost"] for asset in priced)
@@ -140,6 +161,7 @@ def _summarize_positions(assets, income_total, realized):
         "estimated_assets": sum(1 for asset in assets if asset["cost_estimated"]),
         "income_total": income_total,
         "realized_gain": realized,
+        "fixed_income_as_of": fixed_income_as_of,
     }
 
 
@@ -151,7 +173,12 @@ def position(request):
 
     orders = Order.objects.filter(
         Q(user=user)
-        & (Q(asset_type="RF", maturity_date__gte=timezone.now()) | ~Q(asset_type="RF"))
+        # Título sem vencimento conhecido foi comprado depois do último relatório de posição.
+        & (
+            Q(asset_type="RF", maturity_date__gte=timezone.now())
+            | Q(asset_type="RF", maturity_date__isnull=True)
+            | ~Q(asset_type="RF")
+        )
     )
 
     if asset_type:
@@ -162,8 +189,9 @@ def position(request):
         orders_by_name.setdefault(order.name, []).append(order)
 
     income = income_by_name(user)
+    rates = ImpliedRates(user)
     assets = [
-        _build_position(user, name, asset_orders, float(income.get(name, 0)))
+        _build_position(user, name, asset_orders, rates, float(income.get(name, 0)))
         for name, asset_orders in orders_by_name.items()
     ]
     assets = [asset for asset in assets if asset]
@@ -177,7 +205,10 @@ def position(request):
     income_total = float(sum(income.values(), Decimal(0)))
 
     return JsonResponse(
-        {"assets": assets, "summary": _summarize_positions(assets, income_total, float(realized))}
+        {
+            "assets": assets,
+            "summary": _summarize_positions(assets, income_total, float(realized), rates.last_snapshot_date),
+        }
     )
 
 
@@ -440,6 +471,13 @@ def import_confirm(request):
         return JsonResponse({"message": str(error)}, status=400)
 
     return JsonResponse({"file_type": "position", "created_orders": created}, status=201)
+
+
+def performance(request):
+    user = request.user
+    if not user.is_authenticated:
+        return JsonResponse(NOT_AUTHENTICATED, status=401)
+    return JsonResponse(performance_series(user, request.GET.get("class")))
 
 
 def income(request):

@@ -45,6 +45,7 @@ urlpatterns = [
     ),
     path("api/targets", wallet_views.targets, name="targets"),
     path("api/income", wallet_views.income, name="income"),
+    path("api/performance", wallet_views.performance, name="performance"),
     path("api/market-data", wallet_views.market_data, name="market_data"),
     path("api/login", user_views.login_view, name="login"),
     path("api/logout", user_views.logout_view, name="logout"),
