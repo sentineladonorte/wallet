@@ -10,12 +10,12 @@ from django.db import transaction
 from django.db.models import Max
 
 from app.models import AssetPrice
+from wallet.fixed_income import ImpliedRates, grow
 from wallet.models import AssetConsolidatedValue, Order, PositionSnapshot
 from wallet.positions import RunningPosition, summarize_orders
 
 # Um usuário parado há muito tempo não dispara o cálculo de anos de histórico de uma só vez.
 MAX_BACKFILL_DAYS = 30
-DAYS_IN_YEAR = 365
 CENTS = Decimal("0.01")
 VOLUME_STEP = Decimal("0.0001")
 INSERT_BATCH_SIZE = 5000
@@ -55,25 +55,23 @@ class _MarketPrices:
 
 
 class _FixedIncomeValue:
-    """Parte do último valor conhecido e só projeta ganho quando a boleta informa a taxa."""
+    """Parte do último valor conhecido e projeta o ganho pela taxa da boleta ou pela taxa implícita."""
 
-    def __init__(self, user, name, start, orders):
+    def __init__(self, user, name, start, orders, rates):
         previous = AssetConsolidatedValue.objects.filter(user=user, name=name, date__lt=start, volume__gt=0)
         last = previous.order_by("date").last()
         self.value = last.value if last else None
         self.volume = last.volume if last else None
         self.date = last.date if last else None
-        rates = [order.interest_rate for order in orders if order.interest_rate is not None]
-        self.rate = rates[0] if rates else None
+        self.rate = rates.rate_for(name, orders)
 
     def on(self, day, quantity, invested):
         if self.value is None:
             self.value, self.volume, self.date = invested, quantity, day
         if self.volume and quantity != self.volume:
             self.value = self.value * quantity / self.volume
-        if self.rate is not None and day > self.date:
-            growth = (1 + float(self.rate) / 100) ** ((day - self.date).days / DAYS_IN_YEAR)
-            self.value = self.value * Decimal(str(growth))
+        if day > self.date:
+            self.value = grow(self.value, self.rate, (day - self.date).days)
         self.volume, self.date = quantity, day
         return self.value
 
@@ -94,12 +92,13 @@ def consolidate_user(user, until):
 
     tickers = [name for name, items in orders_by_name.items() if items[0].asset_type != "RF"]
     market = _MarketPrices(tickers, start, until)
+    rates = ImpliedRates(user)
     rows = []
 
     for name, name_orders in orders_by_name.items():
         first = name_orders[0]
         is_fixed_income = first.asset_type == "RF"
-        fixed_income = _FixedIncomeValue(user, name, start, name_orders) if is_fixed_income else None
+        fixed_income = _FixedIncomeValue(user, name, start, name_orders, rates) if is_fixed_income else None
 
         for day in days:
             quantity, invested = summarize_orders([order for order in name_orders if order.date <= day])
@@ -162,21 +161,19 @@ def _official_growth(known_values, name_orders):
 
 
 def _fixed_income_value(day, position, known_values, rate, first_date, official_growth):
-    """Último valor oficial. Antes dele não há preço conhecido: o custo cresce até esse valor a uma
-    taxa constante, ou pela taxa da boleta. Sem isso, todo o ganho apareceria de uma vez no gráfico."""
+    """Último valor oficial, projetado pela taxa até a data. Antes dele não há preço conhecido: o custo
+    cresce até esse valor a uma taxa constante. Sem isso, todo o ganho apareceria de uma vez no gráfico."""
     known = [item for item in known_values if item[0] <= day]
     if known:
-        _, value, quantity = known[-1]
-        return value * position.quantity / quantity if quantity else value
+        known_day, value, quantity = known[-1]
+        current = value * position.quantity / quantity if quantity else value
+        return grow(current, rate, (day - known_day).days)
     if official_growth:
         factor, target_day = official_growth
         total_days = (target_day - first_date).days
         if total_days > 0:
             return position.invested * Decimal(str(factor ** ((day - first_date).days / total_days)))
-    if rate is not None:
-        growth = (1 + float(rate) / 100) ** ((day - first_date).days / DAYS_IN_YEAR)
-        return position.invested * Decimal(str(growth))
-    return position.invested
+    return grow(position.invested, rate, (day - first_date).days)
 
 
 def rebuild_history(user):
@@ -195,12 +192,13 @@ def rebuild_history(user):
         orders_by_name[order.name].append(order)
     tickers = [name for name, items in orders_by_name.items() if items[0].asset_type != "RF"]
     market = _MarketPrices(tickers, orders[0].date, until)
+    rates = ImpliedRates(user)
 
     rows = []
     for name, name_orders in orders_by_name.items():
         first = name_orders[0]
         is_rf = first.asset_type == "RF"
-        rate = next((order.interest_rate for order in name_orders if order.interest_rate is not None), None)
+        rate = rates.rate_for(name, name_orders) if is_rf else 0.0
         known = snapshots.get(name, [])
         exact = {day: value for day, value, _ in known}
         official_growth = _official_growth(known, name_orders) if is_rf else None
