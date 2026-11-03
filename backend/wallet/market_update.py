@@ -10,6 +10,7 @@ from django.db import OperationalError, connection, connections
 from django.utils import timezone
 
 from app.categories import fill_missing_categories
+from app.indices import fetch_cdi
 from app.market_data import MarketDataError, fetch_session, weekdays_between
 from app.models import MarketDataUpdate
 from wallet.consolidation import consolidate_all_users, rebuild_history
@@ -76,6 +77,10 @@ def run_update():
         today = timezone.now().astimezone(MARKET_TIME_ZONE).date()
         try:
             _fetch_recent_sessions(run, today)
+        except MarketDataError as error:
+            problems.append(str(error))
+        try:
+            fetch_cdi(today)
         except MarketDataError as error:
             problems.append(str(error))
 

@@ -43,3 +43,13 @@ class MarketDataUpdate(models.Model):
     history_rows = models.IntegerField(default=0)
     message = models.TextField(blank=True, default="")
 
+
+class IndexRate(models.Model):
+    """Taxa diária de um índice de referência, em percentual ao dia (ex.: CDI)."""
+
+    code = models.CharField(max_length=8)
+    date = models.DateField()
+    daily_percent = models.FloatField()
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["code", "date"], name="unique_index_rate")]
