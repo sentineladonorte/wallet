@@ -52,6 +52,15 @@ npm run lint
 
 Não há framework de testes configurado no frontend.
 
+### Testes de navegador
+
+```bash
+e2e/run.sh                     # todos
+e2e/run.sh -k proventos        # argumentos vão para o pytest
+```
+
+Rodam em Docker, num ambiente próprio (`e2e/docker-compose.yml`): banco em memória, rede isolada, sem portas no host, sem acesso à B3 nem ao Investidor10. As planilhas são geradas por `e2e/tests/reports.py` com dados fictícios; nunca use relatórios reais nos testes. Capturas das falhas ficam em `e2e/artifacts/`. Toda tela nova precisa de teste aqui, e todo teste falha se houver erro no console.
+
 ### Comandos de dados (`manage.py`)
 
 | Comando | Função |
@@ -139,6 +148,14 @@ A calculadora de aporte (`lib/contribution.ts`) usa as metas salvas, calcula a m
 - `app/market_data.py` baixa o COTAHIST da B3. O arquivo só existe depois do pregão, e o 404 é tratado como feriado ou arquivo ainda não publicado. Os preços não têm ajuste de desdobramento.
 - `app/categories.py` só preenche o que está vazio. Reaproveita nomes já usados, porque as metas comparam o texto exato: ação e BDR copiam outro papel da mesma empresa; se não houver, ação usa o setor da B3 e BDR a indústria do Investidor10; FII usa o segmento do Investidor10; ETF não tem fonte externa e vem do "Tipo" do relatório da B3.
 - `wallet/consolidation.py` gera `AssetConsolidatedValue` só para datas posteriores à última linha do usuário, limitado a 30 dias, e nunca sobrescreve o valor gravado por uma importação. Renda fixa sem taxa mantém o último valor.
+
+### Renda fixa projetada, vencimentos e rentabilidade
+
+- `wallet/fixed_income.py` calcula a taxa implícita de cada título, do custo até o valor do relatório de posição, e projeta o valor no histórico e no vencimento. Título recente usa a média da carteira, e taxa em boleta manual tem prioridade. O valor só é oficial na data do relatório; a API sinaliza isso em `value_estimated`.
+- Título comprado depois do último relatório aparece sem vencimento, porque o extrato não informa essa data.
+- `lib/cashflow.ts` monta o calendário de `/maturities` a partir das posições e dos proventos. A simulação reutiliza a calculadora de aporte, retirando os títulos que vencem.
+- `wallet/performance.py` calcula o retorno ponderado pelo tempo a partir de `AssetConsolidatedValue` e das boletas. Compras e vendas são fluxos, não ganho; proventos são ganho; eventos e encerramentos deixam o ativo neutro no dia; variação acima de 40% sem operação é tratada como desdobramento na cotação. O CDI vem do Banco Central (`app/indices.py`) e o Ibovespa é medido pelo `BOVA11`.
+- O histórico de renda fixa antes de um relatório é estimado, portanto a rentabilidade antiga também é.
 
 ### Autenticação
 

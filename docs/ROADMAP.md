@@ -41,6 +41,11 @@ Carteira pessoal de investimentos em dark mode: importar a posição da B3, ente
 - [x] Importação do extrato de movimentação da B3, sem duplicar linhas entre arquivos (`wallet/movements.py`)
 - [x] Preço médio real, lucro realizado e histórico completo a partir do extrato
 - [x] Página de proventos: dividendos, rendimentos, JCP e juros por mês e por ativo (`/income`)
+- [x] Testes de navegador no repositório, em ambiente isolado (`e2e/run.sh`)
+- [x] Rendimento diário estimado da renda fixa pela taxa implícita de cada título (`wallet/fixed_income.py`)
+- [x] Calendário de vencimentos e caixa, com simulação de reinvestimento pelas metas (`/maturities`)
+- [x] Rentabilidade ponderada pelo tempo contra CDI e Ibovespa (`wallet/performance.py`, `/performance`)
+- [x] Gráfico de proventos agrupado por mês ou ano
 - [x] Calculadora de aporte (`lib/contribution.ts`): divide o valor entre os grupos abaixo da meta, sem sugerir vendas
 
 ## Próximos passos
@@ -54,16 +59,15 @@ Sem ordem obrigatória.
 - [ ] **Vencimento de títulos antigos:** o extrato não informa vencimento, então títulos encerrados sem baixa saem do histórico na última atividade conhecida, e o patrimônio antigo fica subestimado
 - [ ] Desdobramento depois da última importação: sem o extrato atualizado, a posição fica distorcida até importar de novo
 - [ ] Recalcular o histórico ao editar boletas manuais com data passada (importações já recalculam)
-- [ ] Rendimento de renda fixa entre importações, com a taxa contratada ou uma estimativa pela taxa implícita
+- [ ] **Imposto de Renda:** vendas por mês, isenção de ações, FIIs à parte, prejuízo a compensar e resumo anual
+- [ ] IPCA como terceira referência de rentabilidade (série 433 do Banco Central)
 - [ ] Metas por subcategoria (hoje são dois níveis: classe e categoria)
 - [ ] Indexador CDI e tipos CRI, CRA e debênture na importação
-- [ ] Rentabilidade contra CDI e Ibovespa
-- [ ] Trazer para o repositório o teste de navegador com Playwright (hoje foi um script temporário)
 
 ## Dívida técnica conhecida
 
 - [ ] `populate_asset` usa endpoints da B3 que respondem 405 em parte das etapas; revisar ou remover
-- [ ] Renda fixa sem taxa fica com o valor da última importação até a próxima; `consolidate` ainda recalcula a renda variável do zero, por caminho diferente de `wallet/consolidation.py`
+- [ ] `consolidate` ainda recalcula a renda variável do zero, por caminho diferente de `wallet/consolidation.py`
 - [ ] Segurança: `SECRET_KEY` no código, `DEBUG=True`, `CORS_ALLOW_ALL_ORIGINS` e views com `@csrf_exempt`
 - [ ] Autenticação: o cookie `currentUser` não é `HttpOnly` nem validado pelo middleware do frontend
 - [ ] Dependências `latest` em `frontend/package.json`; fixar versões
@@ -73,7 +77,7 @@ Sem ordem obrigatória.
 - [ ] Não testados no navegador: sessão expirada (401), filtro por corretora com mais de uma corretora e clique no nível "Ativo" da pizza
 - [ ] Remover `backend/dev.py` e `backend/wallet/dev.py`
 - [ ] `AssetClassificationTests` está em `wallet/tests.py`, mas testa o app `app`; mover ao criar os testes de `app`
-- [ ] Testes para `app` e `user`; o frontend não tem framework de testes
+- [ ] Testes para `user`; a lógica do frontend só é coberta pelos testes de navegador
 - [ ] `template1` do Postgres com divergência de collation impede `manage.py test` no banco de desenvolvimento
 
 ## Como começar do zero
@@ -109,6 +113,7 @@ docker exec backend python manage.py update_market_data --year 2024 2025
   ```
   O shell é zsh: escreva as flags `-e` literalmente, sem guardá-las em variável.
 - **Frontend:** `docker exec frontend npx tsc --noEmit` e `docker exec frontend npm run lint`.
+- **Navegador:** `e2e/run.sh`, em ambiente isolado e com dados fictícios. Toda tela nova precisa de teste aqui.
 - **Mudou `tailwind.config.ts`?** Reinicie o contêiner (`docker restart frontend`), senão as cores novas não são geradas.
 - **Visual:** abra o app e olhe. Testes automáticos não pegaram botões invisíveis nem gráficos em branco; as capturas de tela pegaram.
 - **`docker-compose`:** nesta máquina precisa de `DOCKER_API_VERSION=1.44`.
