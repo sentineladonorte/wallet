@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useMemo, useState } from 'react';
+import Link from 'next/link';
 import { Card, CardTitle, Field, inputClass } from '@/components/ui';
 import { planContribution, PlannedAllocation } from '@/lib/contribution';
 import { formatPercent } from '@/lib/format';
@@ -28,9 +29,21 @@ const AllocationRow: React.FC<{ allocation: PlannedAllocation; amount: number; c
   );
 };
 
-const ContributionCalculator: React.FC<{ assets: Position[]; targets: Targets }> = ({ assets, targets }) => {
+const ContributionCalculator: React.FC<{
+  assets: Position[];
+  targets: Targets;
+  initialAmount?: number;
+  title?: string;
+  description?: string;
+}> = ({
+  assets,
+  targets,
+  initialAmount,
+  title = 'Calculadora de aporte',
+  description = 'Informe quanto vai investir para ver como dividir o valor e se aproximar das metas salvas, sem vender nada.',
+}) => {
   const { formatCurrency } = useFormat();
-  const [draft, setDraft] = useState('');
+  const [draft, setDraft] = useState(initialAmount ? initialAmount.toFixed(2) : '');
   const amount = Number(draft);
   const isValid = draft !== '' && Number.isFinite(amount) && amount > 0;
   const hasClassTargets = Object.keys(targets.classes).length > 0;
@@ -42,10 +55,8 @@ const ContributionCalculator: React.FC<{ assets: Position[]; targets: Targets }>
 
   return (
     <Card>
-      <CardTitle>Calculadora de aporte</CardTitle>
-      <p className="text-sm text-muted mb-3">
-        Informe quanto vai investir para ver como dividir o valor e se aproximar das metas salvas, sem vender nada.
-      </p>
+      <CardTitle>{title}</CardTitle>
+      <p className="text-sm text-muted mb-3">{description}</p>
       <Field label="Valor do aporte (R$)" htmlFor="contribution" className="max-w-xs mb-4">
         <input
           id="contribution"
@@ -59,7 +70,11 @@ const ContributionCalculator: React.FC<{ assets: Position[]; targets: Targets }>
         />
       </Field>
 
-      {!hasClassTargets && <p className="text-sm text-muted">Defina as metas por classe abaixo para usar a calculadora.</p>}
+      {!hasClassTargets && (
+        <p className="text-sm text-muted">
+          Defina as metas por classe na página <Link href="/targets" className="text-accent hover:underline">Metas</Link> para usar a calculadora.
+        </p>
+      )}
 
       {plan && (
         <div className="space-y-4">
