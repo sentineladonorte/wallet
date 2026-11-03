@@ -1,0 +1,96 @@
+# Ambiente isolado dos testes de navegador: banco em memória, rede própria e nenhuma porta no host.
+# Não usa o banco de desenvolvimento nem acessa B3 ou Investidor10. Rode por `e2e/run.sh`.
+name: wallet-e2e
+
+services:
+  e2e-postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: e2e
+      POSTGRES_PASSWORD: e2e
+      POSTGRES_DB: e2e
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U e2e -d e2e"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  backend:
+    build: ../backend
+    image: wallet-e2e-backend
+    command: >
+      sh -c "python manage.py migrate --noinput
+      && python manage.py shell < /e2e/seed.py
+      && python manage.py runserver --noreload 0.0.0.0:8000"
+    environment:
+      ENGINE: django.db.backends.postgresql
+      HOST: e2e-postgres
+      PORT: "5432"
+      USER_POSTGRES: e2e
+      PASSWORD: e2e
+      DB_NAME: e2e
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ../backend:/code:ro
+      - ./seed.py:/e2e/seed.py:ro
+    depends_on:
+      e2e-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('localhost', 8000), 2)"]
+      interval: 3s
+      timeout: 4s
+      retries: 40
+
+  frontend:
+    image: node:20-slim
+    # Trabalha numa cópia para não disputar o `.next` do servidor de desenvolvimento.
+    command: >
+      sh -c "cd /src && tar --exclude=node_modules --exclude=.next -cf - . | tar -C /app -xf -
+      && cd /app
+      && (cmp -s package-lock.json node_modules/.e2e-lock || (npm ci --no-audit --no-fund && cp package-lock.json node_modules/.e2e-lock))
+      && npm run dev"
+    environment:
+      NEXT_PUBLIC_BACKEND_URL: https://localhost/api
+      NEXT_TELEMETRY_DISABLED: "1"
+    volumes:
+      - ../frontend:/src:ro
+      - e2e_node_modules:/app/node_modules
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('net').connect(3000,'localhost').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 5s
+      timeout: 4s
+      retries: 60
+
+  nginx:
+    image: nginx:1.27
+    volumes:
+      - ../nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./.certs:/etc/nginx/certs:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+
+  runner:
+    image: mcr.microsoft.com/playwright/python:v1.49.0-noble
+    # Divide a rede com o Nginx: https://localhost dentro do teste é este ambiente.
+    network_mode: "service:nginx"
+    command: >
+      sh -c "pip install -q --root-user-action=ignore -r /e2e/requirements.txt
+      && cd /e2e && python -m pytest tests -p no:cacheprovider ${PYTEST_ARGS:-}"
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ./tests:/e2e/tests:ro
+      - ./requirements.txt:/e2e/requirements.txt:ro
+      - ./pytest.ini:/e2e/pytest.ini:ro
+      - ./artifacts:/e2e/artifacts
+    depends_on:
+      - nginx
+
+volumes:
+  e2e_node_modules:
