@@ -5,3 +5,7 @@ backend/.env
 frontend/.env.development
 posicao-*.xlsx
 movimentacao-*.xlsx
+e2e/.certs/
+e2e/artifacts/
+__pycache__/
+.pytest_cache/

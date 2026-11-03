@@ -14,9 +14,11 @@ from openpyxl import Workbook
 
 from app.models import Asset, AssetPrice
 from app.market_data import MarketDataError
-from app.models import MarketDataUpdate
+from app.models import IndexRate, MarketDataUpdate
 from wallet.b3_import import ImportFileError, apply_plan, build_plan, parse_position_file
 from wallet.consolidation import MAX_BACKFILL_DAYS, consolidate_all_users, rebuild_history
+from wallet.fixed_income import ImpliedRates, grow
+from wallet.performance import performance_series
 from wallet.market_update import run_update, update_status
 from wallet.models import AllocationTarget, AssetConsolidatedValue, Movement, Order, PositionSnapshot
 from wallet.movements import (
@@ -707,7 +709,8 @@ class PositionViewTests(TestCase):
         rows = {row["name"]: row for row in self.position()["assets"]}
 
         self.assertIsNone(rows["TEST3"]["price"])
-        self.assertIsNone(rows["CDB1"]["value"])
+        # Título sem linha de histórico ainda vale o custo.
+        self.assertEqual(rows["CDB1"]["value"], 1000.0)
 
     def test_class_comes_from_order_even_if_asset_differs(self):
         Asset.objects.create(ticker="TEST34", asset_class="AC", category="Tech", sub_category="Software")
@@ -1332,10 +1335,11 @@ class ConsolidationTests(TestCase):
         self.assertTrue(AssetConsolidatedValue.objects.filter(user=self.user, name="CDB1").exists())
 
 
+@mock.patch("wallet.market_update.fetch_cdi", return_value=0)
 @mock.patch("wallet.market_update.fill_missing_categories", return_value=(0, [], False))
 @mock.patch("wallet.market_update.fetch_session")
 class MarketUpdateTests(TestCase):
-    def test_downloads_only_sessions_after_the_last_one(self, fetch, categories):
+    def test_downloads_only_sessions_after_the_last_one(self, fetch, categories, cdi):
         MarketDataUpdate.objects.create(status="success", last_session=date.today() - timedelta(days=1))
         fetch.return_value = None
 
@@ -1345,7 +1349,7 @@ class MarketUpdateTests(TestCase):
         for call in fetch.call_args_list:
             self.assertGreaterEqual(call[0][0], date.today() - timedelta(days=1))
 
-    def test_records_success_and_last_session(self, fetch, categories):
+    def test_records_success_and_last_session(self, fetch, categories, cdi):
         fetch.side_effect = lambda day: (3, day)
 
         run = run_update()
@@ -1356,7 +1360,7 @@ class MarketUpdateTests(TestCase):
         self.assertGreater(run.prices_saved, 0)
         self.assertFalse(update_status()["running"])
 
-    def test_missing_files_keep_previous_last_session(self, fetch, categories):
+    def test_missing_files_keep_previous_last_session(self, fetch, categories, cdi):
         MarketDataUpdate.objects.create(status="success", last_session=date(2026, 10, 30))
         fetch.return_value = None
 
@@ -1365,7 +1369,7 @@ class MarketUpdateTests(TestCase):
         self.assertEqual(run.status, "success")
         self.assertEqual(update_status()["last_session"], date(2026, 10, 30))
 
-    def test_download_failure_is_recorded_and_history_still_runs(self, fetch, categories):
+    def test_download_failure_is_recorded_and_history_still_runs(self, fetch, categories, cdi):
         fetch.side_effect = MarketDataError("B3 fora do ar")
 
         with mock.patch("wallet.market_update.consolidate_all_users", return_value=7) as consolidate:
@@ -1375,7 +1379,16 @@ class MarketUpdateTests(TestCase):
         self.assertEqual(run.status, "error")
         self.assertIn("B3 fora do ar", run.message)
 
-    def test_unresolved_categories_are_reported_without_failing(self, fetch, categories):
+    def test_cdi_failure_is_recorded(self, fetch, categories, cdi):
+        fetch.return_value = None
+        cdi.side_effect = MarketDataError("Banco Central fora do ar")
+
+        run = run_update()
+
+        self.assertEqual(run.status, "error")
+        self.assertIn("Banco Central fora do ar", run.message)
+
+    def test_unresolved_categories_are_reported_without_failing(self, fetch, categories, cdi):
         fetch.return_value = None
         categories.return_value = (0, ["BOVA11"], False)
 
@@ -1384,7 +1397,7 @@ class MarketUpdateTests(TestCase):
         self.assertEqual(run.status, "success")
         self.assertIn("BOVA11", run.message)
 
-    def test_sends_only_market_assets_for_categories(self, fetch, categories):
+    def test_sends_only_market_assets_for_categories(self, fetch, categories, cdi):
         fetch.return_value = None
         user = User.objects.create_user("investidor", password="senha")
         for name, asset_type in (("TEST3", "AC"), ("CDB1", "RF")):
@@ -1403,7 +1416,7 @@ class MarketUpdateTests(TestCase):
 
         categories.assert_called_once_with({"TEST3": "AC"})
 
-    def test_second_run_is_skipped_while_one_holds_the_lock(self, fetch, categories):
+    def test_second_run_is_skipped_while_one_holds_the_lock(self, fetch, categories, cdi):
         with mock.patch("wallet.market_update._try_lock", return_value=False):
             self.assertIsNone(run_update())
         self.assertEqual(MarketDataUpdate.objects.count(), 0)
@@ -2208,3 +2221,343 @@ class SnapshotMigrationTests(TestCase):
         self.assertEqual((row.name, row.quantity, row.value, row.date), ("PETR4", Decimal(2), Decimal(100), SNAPSHOT))
         self.assertEqual(Order.objects.get(name="PETR4").source, Order.SOURCE_POSITION)
         self.assertEqual(Order.objects.get(name="MANUAL3").source, Order.SOURCE_MANUAL)
+
+
+class FixedIncomeProjectionTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("investidor", password="senha")
+        self.client.force_login(self.user)
+
+    def order(self, name="CDB1", first=date(2024, 1, 1), price=Decimal(1000), **overrides):
+        fields = {
+            "user": self.user,
+            "name": name,
+            "broker": "XP",
+            "asset_type": "RF",
+            "order_type": 1,
+            "date": first,
+            "price": price,
+            "volume": Decimal(1),
+            "maturity_date": date.today() + timedelta(days=730),
+            "index": "P",
+            "fixed_income_type": "CDB",
+            "source": Order.SOURCE_MOVEMENT,
+        }
+        fields.update(overrides)
+        return Order.objects.create(**fields)
+
+    def snapshot(self, name="CDB1", value=1100, day=date(2025, 1, 1)):
+        return PositionSnapshot.objects.create(
+            user=self.user,
+            date=day,
+            name=name,
+            broker="XP",
+            asset_type="RF",
+            quantity=Decimal(1),
+            unit_price=Decimal(value),
+            value=Decimal(value),
+        )
+
+    def test_grow_compounds_by_days(self):
+        self.assertEqual(grow(Decimal(100), 0.10, 365), Decimal("110.0"))
+        self.assertEqual(grow(Decimal(100), 0.10, 0), Decimal(100))
+        self.assertEqual(grow(Decimal(100), 0.0, 365), Decimal(100))
+
+    def test_implied_rate_from_cost_and_official_value(self):
+        self.order()
+        self.snapshot()
+
+        rate = ImpliedRates(self.user).rates["CDB1"]
+
+        self.assertAlmostEqual(rate, 1.1 ** (365 / 366) - 1, places=6)
+
+    def test_recent_title_uses_portfolio_average(self):
+        self.order()
+        self.snapshot()
+        self.order(name="NOVO", first=date(2024, 12, 20))
+        self.snapshot(name="NOVO", value=1005)
+
+        rates = ImpliedRates(self.user)
+
+        self.assertNotIn("NOVO", rates.rates)
+        self.assertAlmostEqual(rates.rate_for("NOVO", []), rates.rates["CDB1"], places=6)
+
+    def test_rate_is_limited_and_never_negative(self):
+        self.order(name="ALTO")
+        self.snapshot(name="ALTO", value=5000)
+        self.order(name="BAIXO")
+        self.snapshot(name="BAIXO", value=900)
+
+        rates = ImpliedRates(self.user).rates
+
+        self.assertEqual(rates["ALTO"], 0.30)
+        self.assertEqual(rates["BAIXO"], 0.0)
+
+    def test_estimated_cost_gives_no_rate(self):
+        self.order(cost_estimated=True)
+        self.snapshot()
+
+        self.assertEqual(ImpliedRates(self.user).rates, {})
+
+    def test_rate_informed_on_manual_order_wins(self):
+        order = self.order(source=Order.SOURCE_MANUAL, interest_rate=Decimal(15))
+        self.snapshot()
+
+        self.assertEqual(ImpliedRates(self.user).rate_for("CDB1", [order]), 0.15)
+
+    def test_no_snapshot_means_no_projection(self):
+        order = self.order()
+        rates = ImpliedRates(self.user)
+
+        self.assertEqual(rates.rate_for("CDB1", [order]), 0.0)
+        self.assertIsNone(rates.last_snapshot_date)
+
+    def test_daily_history_grows_after_official_value(self):
+        self.order()
+        self.snapshot()
+        AssetConsolidatedValue.objects.create(
+            user=self.user,
+            name="CDB1",
+            asset_type="RF",
+            date=date(2025, 1, 1),
+            value=1100,
+            volume=1,
+            invested=1000,
+        )
+        AssetPrice.objects.create(ticker="X", date=date(2026, 1, 1), close=1.0)
+
+        consolidate_all_users()
+
+        value = AssetConsolidatedValue.objects.get(user=self.user, name="CDB1", date=date(2026, 1, 1)).value
+        self.assertAlmostEqual(float(value), 1100 * 1.1 ** (365 / 366), places=0)
+
+    def test_full_rebuild_grows_after_official_value(self):
+        self.order()
+        self.snapshot()
+        AssetPrice.objects.create(ticker="X", date=date(2026, 1, 1), close=1.0)
+
+        rebuild_history(self.user)
+
+        row = AssetConsolidatedValue.objects.get(user=self.user, name="CDB1", date=date(2025, 1, 1))
+        self.assertEqual(row.value, Decimal(1100))
+        later = AssetConsolidatedValue.objects.get(user=self.user, name="CDB1", date=date(2026, 1, 1)).value
+        self.assertGreater(later, Decimal(1200))
+
+    def test_position_reports_projection_and_maturity_value(self):
+        self.order()
+        self.snapshot()
+        AssetConsolidatedValue.objects.create(
+            user=self.user,
+            name="CDB1",
+            asset_type="RF",
+            date=date(2025, 6, 1),
+            value=1200,
+            volume=1,
+            invested=1000,
+        )
+
+        body = self.client.get("/api/position").json()
+        asset = body["assets"][0]
+
+        self.assertTrue(asset["value_estimated"])
+        self.assertAlmostEqual(asset["estimated_rate"], (1.1 ** (365 / 366) - 1) * 100, places=4)
+        self.assertGreater(asset["maturity_value"], asset["value"])
+        self.assertEqual(body["summary"]["fixed_income_as_of"], "2025-01-01")
+
+    def test_value_on_snapshot_date_is_official(self):
+        self.order()
+        self.snapshot()
+        AssetConsolidatedValue.objects.create(
+            user=self.user,
+            name="CDB1",
+            asset_type="RF",
+            date=date(2025, 1, 1),
+            value=1100,
+            volume=1,
+            invested=1000,
+        )
+
+        self.assertFalse(self.client.get("/api/position").json()["assets"][0]["value_estimated"])
+
+    def test_title_bought_after_snapshot_appears_without_maturity(self):
+        self.order(maturity_date=None, name="COMPRADO")
+
+        asset = self.client.get("/api/position").json()["assets"][0]
+
+        self.assertEqual(asset["name"], "COMPRADO")
+        self.assertEqual(asset["value"], 1000.0)
+        self.assertIsNone(asset["maturity_date"])
+        self.assertIsNone(asset["maturity_value"])
+
+    def test_matured_title_is_not_listed(self):
+        self.order(maturity_date=date.today() - timedelta(days=1))
+
+        self.assertEqual(self.client.get("/api/position").json()["assets"], [])
+
+
+class PerformanceTests(TestCase):
+    D1, D2, D3 = date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)
+
+    def setUp(self):
+        self.user = User.objects.create_user("investidor", password="senha")
+
+    def value(self, day, value, name="AAAA3", asset_type="AC"):
+        AssetConsolidatedValue.objects.create(
+            user=self.user,
+            name=name,
+            asset_type=asset_type,
+            date=day,
+            value=Decimal(value),
+            volume=1,
+            invested=1,
+        )
+
+    def order(self, day, price, volume=1, order_type=1, name="AAAA3", kind=Order.KIND_TRADE, asset_type="AC"):
+        Order.objects.create(
+            user=self.user,
+            name=name,
+            broker="XP",
+            asset_type=asset_type,
+            order_type=order_type,
+            date=day,
+            price=Decimal(price),
+            volume=Decimal(volume),
+            kind=kind,
+        )
+
+    def test_gain_is_measured_on_capital(self):
+        self.value(self.D1, 1000)
+        self.value(self.D2, 1100)
+
+        series = performance_series(self.user)
+
+        self.assertEqual(series["dates"], [self.D1, self.D2])
+        self.assertAlmostEqual(series["portfolio"][-1], 1.10)
+
+    def test_contribution_does_not_count_as_return(self):
+        self.value(self.D1, 1000)
+        self.value(self.D2, 2000)
+        self.order(self.D2, 1000)
+
+        self.assertAlmostEqual(performance_series(self.user)["portfolio"][-1], 1.0)
+
+    def test_return_does_not_depend_on_contribution_size(self):
+        self.value(self.D1, 1000)
+        self.value(self.D2, 2000)
+        self.order(self.D2, 1000)
+        self.value(self.D3, 2200)
+
+        self.assertAlmostEqual(performance_series(self.user)["portfolio"][-1], 1.10)
+
+    def test_sale_does_not_count_as_loss(self):
+        self.value(self.D1, 2000)
+        self.value(self.D2, 1000)
+        self.order(self.D2, 1000, order_type=-1)
+
+        self.assertAlmostEqual(performance_series(self.user)["portfolio"][-1], 1.0)
+
+    def test_income_counts_as_return(self):
+        self.value(self.D1, 1000)
+        self.value(self.D2, 1000)
+        Movement.objects.create(
+            user=self.user,
+            fingerprint="x",
+            date=self.D2,
+            direction=1,
+            movement_type="Dividendo",
+            name="AAAA3",
+            product="AAAA3 - X",
+            broker="XP",
+            quantity=Decimal(1),
+            unit_price=Decimal(10),
+            value=Decimal(10),
+        )
+
+        self.assertAlmostEqual(performance_series(self.user)["portfolio"][-1], 1.01)
+
+    def test_closing_without_record_is_neutral(self):
+        self.value(self.D1, 1000, "SAIU3")
+        self.value(self.D1, 1000)
+        self.value(self.D2, 1000)
+        self.order(self.D2, 500, order_type=-1, name="SAIU3", kind=Order.KIND_RECONCILIATION)
+
+        self.assertAlmostEqual(performance_series(self.user)["portfolio"][-1], 1.0)
+
+    def test_split_on_unadjusted_quote_is_ignored(self):
+        self.value(self.D1, 1000)
+        self.value(self.D1, 1000, "SPLIT3")
+        self.value(self.D2, 1000)
+        self.value(self.D2, 500, "SPLIT3")
+
+        series = performance_series(self.user)
+
+        self.assertAlmostEqual(series["portfolio"][-1], 1.0)
+        self.assertEqual(series["ignored_days"], 1)
+
+    def test_small_starting_capital_is_skipped(self):
+        self.value(self.D1, 10)
+        self.value(self.D2, 20)
+        self.value(self.D3, 1000)
+        self.order(self.D3, 980)
+        d4 = date(2024, 1, 5)
+        self.value(d4, 1100)
+
+        series = performance_series(self.user)
+
+        self.assertEqual(series["dates"][0], self.D2)
+        self.assertAlmostEqual(series["portfolio"][-1], 1.0 * (1 + 0 / 1000) * 1.1, places=6)
+
+    def test_class_filter(self):
+        self.value(self.D1, 1000)
+        self.value(self.D2, 1100)
+        self.value(self.D1, 1000, "BBBB11", "FII")
+        self.value(self.D2, 1000, "BBBB11", "FII")
+
+        self.assertAlmostEqual(performance_series(self.user, "FII")["portfolio"][-1], 1.0)
+        self.assertAlmostEqual(performance_series(self.user, "ac")["portfolio"][-1], 1.10)
+        self.assertAlmostEqual(performance_series(self.user)["portfolio"][-1], 1.05)
+
+    def test_benchmarks_start_at_one_and_compound(self):
+        self.value(self.D1, 1000)
+        self.value(self.D2, 1000)
+        self.value(self.D3, 1000)
+        for day in (self.D1, self.D2, self.D3):
+            IndexRate.objects.create(code="CDI", date=day, daily_percent=1.0)
+        for day, close in ((self.D1, 100.0), (self.D2, 110.0), (self.D3, 121.0)):
+            AssetPrice.objects.create(ticker="BOVA11", date=day, close=close)
+
+        series = performance_series(self.user)
+
+        self.assertAlmostEqual(series["cdi"][0], 1.0)
+        self.assertAlmostEqual(series["cdi"][-1], 1.01**2)
+        self.assertAlmostEqual(series["ibov"][0], 1.0)
+        self.assertAlmostEqual(series["ibov"][-1], 1.21)
+
+    def test_jump_in_benchmark_quote_is_ignored(self):
+        self.value(self.D1, 1000)
+        self.value(self.D2, 1000)
+        for day, close in ((self.D1, 100.0), (self.D2, 10.0)):
+            AssetPrice.objects.create(ticker="BOVA11", date=day, close=close)
+
+        self.assertAlmostEqual(performance_series(self.user)["ibov"][-1], 1.0)
+
+    def test_missing_benchmarks_and_empty_portfolio(self):
+        self.assertEqual(performance_series(self.user)["dates"], [])
+        self.value(self.D1, 1000)
+        self.value(self.D2, 1000)
+
+        series = performance_series(self.user)
+
+        self.assertEqual(series["cdi"], [None, None])
+        self.assertEqual(series["ibov"], [None, None])
+
+    def test_endpoint(self):
+        self.assertEqual(self.client.get("/api/performance").status_code, 401)
+        self.client.force_login(self.user)
+        self.value(self.D1, 1000)
+        self.value(self.D2, 1100)
+
+        body = self.client.get("/api/performance").json()
+
+        self.assertEqual(body["dates"], ["2024-01-02", "2024-01-03"])
+        self.assertAlmostEqual(body["portfolio"][-1], 1.10)

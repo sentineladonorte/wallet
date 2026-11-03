@@ -20,6 +20,9 @@ export interface Position {
   maturity_date: string | null;
   brokers: { broker: string; volume: number }[];
   cost_estimated: boolean;
+  estimated_rate: number | null;
+  maturity_value: number | null;
+  value_estimated: boolean;
 }
 
 export interface PositionSummary {
@@ -32,6 +35,15 @@ export interface PositionSummary {
   estimated_assets: number;
   income_total: number;
   realized_gain: number;
+  fixed_income_as_of: string | null;
+}
+
+export interface PerformanceSeries {
+  dates: string[];
+  portfolio: number[];
+  cdi: (number | null)[];
+  ibov: (number | null)[];
+  ignored_days: number;
 }
 
 export interface PositionResponse {

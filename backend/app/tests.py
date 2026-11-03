@@ -7,8 +7,9 @@ import requests
 from django.test import TestCase
 
 from app.categories import fill_missing_categories, parse_bdr_page, parse_fii_page
+from app.indices import fetch_cdi
 from app.market_data import MarketDataError, fetch_session, fetch_year, parse_line, weekdays_between
-from app.models import Asset, AssetPrice
+from app.models import Asset, AssetPrice, IndexRate
 
 
 def quote_line(ticker="PETR4", day="20261030", market="010", close=5271, factor=1, record="01"):
@@ -190,7 +191,7 @@ class FillCategoriesTests(TestCase):
 
     def test_parses_bdr_page(self, get, sleep):
         snippet = (
-            'listada no setor de Financeiro e categorizada na ind&uacute;stria de\n'
+            "listada no setor de Financeiro e categorizada na ind&uacute;stria de\n"
             '<a href="x"> Bancos </a> . Nos meses'
         )
 
@@ -252,3 +253,64 @@ class FillCategoriesTests(TestCase):
 
         self.assertEqual((filled, len(unresolved)), (20, 5))
         self.assertEqual(get.call_count, 20)
+
+
+@mock.patch("app.indices.requests.get")
+class FetchCdiTests(TestCase):
+    TODAY = date(2026, 10, 30)
+
+    def api(self, rows, status=200):
+        fake = mock.Mock(status_code=status)
+        fake.json.return_value = rows
+        return fake
+
+    def test_stores_daily_rates(self, get):
+        get.return_value = self.api(
+            [{"data": "29/10/2026", "valor": "0.050788"}, {"data": "30/10/2026", "valor": "0.05"}]
+        )
+
+        self.assertEqual(fetch_cdi(self.TODAY), 2)
+
+        self.assertEqual(IndexRate.objects.get(date=date(2026, 10, 29)).daily_percent, 0.050788)
+        self.assertEqual(get.call_args[1]["params"]["dataInicial"], "01/01/2020")
+
+    def test_downloads_only_what_is_missing(self, get):
+        IndexRate.objects.create(code="CDI", date=date(2026, 10, 28), daily_percent=0.05)
+        get.return_value = self.api([])
+
+        fetch_cdi(self.TODAY)
+
+        self.assertEqual(get.call_args[1]["params"]["dataInicial"], "29/10/2026")
+
+    def test_nothing_to_do_when_up_to_date(self, get):
+        IndexRate.objects.create(code="CDI", date=self.TODAY, daily_percent=0.05)
+
+        self.assertEqual(fetch_cdi(self.TODAY), 0)
+        get.assert_not_called()
+
+    def test_respects_ten_year_limit_of_api(self, get):
+        get.return_value = self.api([])
+
+        fetch_cdi(date(2035, 1, 1))
+
+        self.assertEqual(get.call_args[1]["params"]["dataFinal"], "29/12/2029")
+
+    def test_no_rate_in_period_is_not_an_error(self, get):
+        get.return_value = self.api([], status=404)
+
+        self.assertEqual(fetch_cdi(self.TODAY), 0)
+
+    def test_ignores_malformed_rows(self, get):
+        get.return_value = self.api(
+            [{"data": "x", "valor": "1"}, {"data": "30/10/2026"}, {"data": "29/10/2026", "valor": "0.05"}]
+        )
+
+        self.assertEqual(fetch_cdi(self.TODAY), 1)
+
+    def test_failures_raise_market_data_error(self, get):
+        get.return_value = self.api([], status=500)
+        with self.assertRaises(MarketDataError):
+            fetch_cdi(self.TODAY)
+        get.side_effect = requests.ConnectionError()
+        with self.assertRaises(MarketDataError):
+            fetch_cdi(self.TODAY)

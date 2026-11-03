@@ -72,7 +72,7 @@ const Insights: React.FC<{ assets: Position[] }> = ({ assets }) => {
           </Card>
 
           <Card>
-            <CardTitle>Próximos vencimentos</CardTitle>
+            <CardTitle action={<Link href="/maturities" className="text-xs text-accent hover:underline">Ver calendário</Link>}>Próximos vencimentos</CardTitle>
             <ul className="text-sm space-y-2">
               {maturities.map((asset) => (
                 <li key={asset.name} className="flex justify-between gap-2">
