@@ -11,35 +11,49 @@ ChartJS.register(BarElement, CategoryScale, LinearScale, Tooltip, Legend);
 
 const SURFACE = '#1a1a19';
 
-const shortMonth = (key: string) => `${key.slice(5)}/${key.slice(2, 4)}`;
+export type IncomePeriod = 'month' | 'year';
 
-const IncomeBars: React.FC<{ rows: IncomeRow[] }> = ({ rows }) => {
+const shortMonth = (key: string) => `${key.slice(5)}/${key.slice(2, 4)}`;
+const yearKey = (iso: string) => iso.slice(0, 4);
+
+const yearsBetween = (first: string, last: string) => {
+  const years: string[] = [];
+  for (let year = Number(first); year <= Number(last); year += 1) years.push(String(year));
+  return years;
+};
+
+const IncomeBars: React.FC<{ rows: IncomeRow[]; period: IncomePeriod }> = ({ rows, period }) => {
   const { formatCompact, formatCurrency } = useFormat();
-  const keys = rows.map((row) => monthKey(row.date)).sort();
+  const keyOf = period === 'year' ? yearKey : monthKey;
+  const keys = rows.map((row) => keyOf(row.date)).sort();
   if (keys.length === 0) return null;
 
-  const months = monthsBetween(keys[0], keys[keys.length - 1]);
+  // Inclui períodos sem pagamento, para o eixo não esconder os intervalos.
+  const periods = period === 'year'
+    ? yearsBetween(keys[0], keys[keys.length - 1])
+    : monthsBetween(keys[0], keys[keys.length - 1]);
   const types = INCOME_TYPES.filter((type) => rows.some((row) => row.type === type));
   const totals: Record<string, Record<string, number>> = {};
   rows.forEach((row) => {
-    const month = monthKey(row.date);
-    totals[month] = totals[month] || {};
-    totals[month][row.type] = (totals[month][row.type] || 0) + row.value;
+    const key = keyOf(row.date);
+    totals[key] = totals[key] || {};
+    totals[key][row.type] = (totals[key][row.type] || 0) + row.value;
   });
 
   return (
     <div className="h-72">
       <Bar
-        aria-label="Proventos recebidos por mês e por tipo"
+        aria-label={`Proventos recebidos por ${period === 'year' ? 'ano' : 'mês'} e por tipo`}
         data={{
-          labels: months.map(shortMonth),
+          labels: period === 'year' ? periods : periods.map(shortMonth),
           datasets: types.map((type) => ({
             label: type,
-            data: months.map((month) => totals[month]?.[type] ?? 0),
+            data: periods.map((key) => totals[key]?.[type] ?? 0),
             backgroundColor: INCOME_COLORS[type],
             borderColor: SURFACE,
             borderWidth: 1,
             stack: 'income',
+            ...(period === 'year' ? { maxBarThickness: 72 } : {}),
           })),
         }}
         options={{

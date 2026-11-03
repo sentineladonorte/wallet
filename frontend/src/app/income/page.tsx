@@ -3,7 +3,7 @@
 import React, { useMemo, useState } from 'react';
 import Link from 'next/link';
 import AssetLink from '@/components/assetLink';
-import IncomeBars from '@/components/charts/incomeBars';
+import IncomeBars, { IncomePeriod } from '@/components/charts/incomeBars';
 import { Button, Card, CardTitle, EmptyState, ErrorState, LoadingState, PageHeader, inputClass } from '@/components/ui';
 import { CLASS_COLORS, classLabel } from '@/lib/assets';
 import { formatDate, formatPercent } from '@/lib/format';
@@ -28,6 +28,7 @@ const IncomePage: React.FC = () => {
   const { data, isLoading, error, reload } = useApi<IncomeResponse>('/income');
   const [year, setYear] = useState('');
   const [assetClass, setAssetClass] = useState('');
+  const [period, setPeriod] = useState<IncomePeriod>('month');
 
   const rows = useMemo(() => data?.rows ?? [], [data]);
   const years = useMemo(() => Array.from(new Set(rows.map((row) => row.date.slice(0, 4)))).sort().reverse(), [rows]);
@@ -101,8 +102,26 @@ const IncomePage: React.FC = () => {
         </div>
 
         <Card>
-          <CardTitle>Recebido por mês</CardTitle>
-          <IncomeBars rows={filtered} />
+          <CardTitle
+            action={(
+              <div role="group" aria-label="Agrupar gráfico por" className="flex gap-1">
+                {([['month', 'Mês'], ['year', 'Ano']] as [IncomePeriod, string][]).map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    aria-pressed={period === key}
+                    onClick={() => setPeriod(key)}
+                    className={`px-2.5 py-1 rounded-md text-xs transition ${period === key ? 'bg-raised text-ink' : 'text-muted hover:text-ink'}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          >
+            Recebido por {period === 'year' ? 'ano' : 'mês'}
+          </CardTitle>
+          <IncomeBars rows={filtered} period={period} />
         </Card>
 
         <div className="grid xl:grid-cols-3 gap-4">
