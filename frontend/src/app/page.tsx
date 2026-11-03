@@ -15,7 +15,7 @@ import {
   AllocationFilter, AllocationGroup, Dimension, applyFilters, availableDimensions, nextDimension,
 } from '@/lib/allocation';
 import { investidor10Url } from '@/lib/assets';
-import { formatSignedPercent } from '@/lib/format';
+import { formatDate, formatSignedPercent } from '@/lib/format';
 import { useFormat } from '@/lib/privacy';
 import { Targets } from '@/lib/targets';
 import { useApi } from '@/lib/useApi';
@@ -114,6 +114,11 @@ export default function Home() {
       />
 
       <div className="space-y-4">
+        {assets.some((asset) => asset.value_estimated) && (
+          <p className="text-xs text-muted">
+            A renda fixa é projetada{summary.fixed_income_as_of ? ` desde o relatório da B3 de ${formatDate(summary.fixed_income_as_of)}` : ''}, pela taxa implícita de cada título. O próximo relatório corrige os valores.
+          </p>
+        )}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <Stat label="Patrimônio" detail={`${summary.assets} ativo(s)${summary.assets_without_price > 0 ? `, ${summary.assets_without_price} sem preço` : ''}`}>
             {formatCurrency(summary.value)}

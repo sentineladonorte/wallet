@@ -180,6 +180,9 @@ const PositionsTable: React.FC<{
                 <td className="py-2 px-2 text-right tabular-nums hidden sm:table-cell whitespace-nowrap">{formatCurrency(asset.price)}</td>
                 <td className="py-2 px-2 text-right tabular-nums whitespace-nowrap">
                   {formatCurrency(asset.value)}
+                  {asset.value_estimated && (
+                    <div className="text-[11px] text-warn" title={`Projetado por ${formatPercent(asset.estimated_rate)} ao ano desde o último relatório da B3.`}>projetado</div>
+                  )}
                   {asset.value !== null && total > 0 && (
                     <div className="text-xs text-muted">{formatPercent((asset.value / total) * 100)}</div>
                   )}
